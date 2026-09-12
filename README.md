@@ -6,6 +6,14 @@ that phones home, the phone that runs an ad SDK, the IoT box that never stops �
 result as a table, a plain domain list, CSV, JSON or a self-contained **HTML report** with live
 filters, sortable columns and a per-domain look-up.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
+  <img alt="The HTML report: a client's domains with their state, category, hit count and last seen"
+       src="docs/hero-light.png">
+</picture>
+
+And the same data in the terminal:
+
 ```
 $ pihole-peek --client 192.0.2.70 --status blocked
 DOMAIN                                                  HITS  LAST SEEN
@@ -23,6 +31,11 @@ Pi-hole v6 only. Version 5 used `admin/api.php` with an auth token, which this t
 ## Requirements
 
 `bash` 4.2 or later, `curl`, `jq` 1.6 or later (it uses `$ARGS.named`), and the GNU `date` command.
+
+**Tested on Pi-hole core v6.4.3 with FTL v6.7.** That is the only build it has been run against. The
+v6 API is stable across the 6.x line, so other builds should work, but if one does not, open an
+issue with the output of `pihole-peek -f raw | jq '.queries[0]'` and the version the Pi-hole reports
+at `/api/info/version`.
 
 ## Install
 
@@ -202,6 +215,12 @@ What the page gives you:
 * **light and dark** — the sun/moon button forces either one, otherwise the page follows the system
   theme and the button follows with it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/detail-dark.png">
+  <img alt="A row opened: first and last seen, the statuses, the registrable name, the rule that chose the category, then the Whois button and the look-up links"
+       src="docs/detail-light.png">
+</picture>
+
 `--alias` gives the client a name you recognise. The report then reads *pihole-peek · 192.0.2.70
 **living room TV***, the browser tab carries the name, and *Download CSV* uses it in the file name.
 An address tells you which device answered; the alias tells you which device it is.
@@ -295,6 +314,10 @@ streaming         ^cdn-0\.example-video\.com$
 ```
 
 A regex that does not compile is reported in the legend instead of breaking the page.
+
+The shipped rules are opinions, not facts: they were written against one home network and they will
+put some domain in the wrong box on yours. That is what the rule shown on hover is for. A pull
+request that fixes a rule, or adds a category, is welcome.
 
 ### The Whois button
 

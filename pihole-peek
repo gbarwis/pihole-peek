@@ -676,7 +676,10 @@ function statusOf(raw) {
   if (kinds.length > 1)
     return ["mixed", KINDS.filter(k => kinds.includes(k)).join(" + ")];
   if (parts.length === 1) return STATUS[parts[0]] || ["other", parts[0].toLowerCase()];
-  return [kinds[0], kinds[0] + " · " + parts.length + " statuses"];
+  /* same state, several reasons: name them all, e.g. blocked · blocklist + your rule */
+  const why = [...new Set(parts.map(p => ((STATUS[p] || [, p.toLowerCase()])[1])
+                                         .replace(/^[a-z]+ · /, "")))];
+  return [kinds[0], kinds[0] + " · " + why.join(" + ")];
 }
 
 
@@ -776,7 +779,9 @@ function detailRow(r) {
         '<span>queries <b>' + fmtN(r.hits) + '</b></span>' +
         '<span>status <b>' + esc(r.status) + '</b></span>' +
         '<span>registrable name <b>' + esc(reg) + '</b></span>' +
-        (HAS_CATS ? '<span>category <b>' + esc(r.category) + "</b> \u2014 " + esc(r.rule) + "</span>" : "") +
+        (HAS_CATS ? '<span title="' + esc(r.rule) + '">category <b>' + esc(r.category) +
+                    "</b> \u2014 " + esc(r.rule.length > 72 ? r.rule.slice(0, 70) + "\u2026/" : r.rule) +
+                    "</span>" : "") +
       '</div>' +
       '<div class="links">' +
         '<span class="lbl">Look up</span>' +
