@@ -8,6 +8,9 @@ PIHOLE_URL="http://pihole.example.lan"
 # Default client. Leave it out to report every client.
 #PIHOLE_CLIENT="192.0.2.70"
 
+# Friendly name of that client, written next to its address in the html report.
+#PIHOLE_ALIAS="living room TV"
+
 # Web password or app password. Leave it out if the Pi-hole has no password.
 # An app password (Settings > Web interface / API) is better than the web one.
 #PIHOLE_PASSWORD="change-me"

@@ -42,7 +42,7 @@ wins over the config file**:
 | Source | Where |
 |---|---|
 | command line | `--url`, `--client`, … |
-| environment | `PIHOLE_URL`, `PIHOLE_CLIENT`, `PIHOLE_PASSWORD` |
+| environment | `PIHOLE_URL`, `PIHOLE_CLIENT`, `PIHOLE_ALIAS`, `PIHOLE_PASSWORD` |
 | config file | a file named `config` next to the script, or the path in `PIHOLE_PEEK_CONFIG` |
 
 Copy the example and edit it:
@@ -55,6 +55,7 @@ chmod 600 config          # it can hold a password
 ```sh
 PIHOLE_URL="http://pihole.example.lan"
 #PIHOLE_CLIENT="192.0.2.70"
+#PIHOLE_ALIAS="living room TV"
 #PIHOLE_PASSWORD="change-me"
 #PIHOLE_STATUS="blocked"
 #PIHOLE_HOURS="24"
@@ -80,6 +81,7 @@ pihole-peek -n 20 -f csv > report.csv            # top 20 rows as CSV
 pihole-peek -d 'doubleclick|googleads' -s all    # only the domains that match a regex
 
 pihole-peek -s all -f html > report.html          # interactive report, open it in a browser
+pihole-peek -c 192.0.2.70 -A "living room TV" -f html > tv.html
 
 pihole-peek --since '2026-09-12 00:00' --until '2026-09-12 08:00'
 pihole-peek -u https://pihole.example.lan:8443 -k    # HTTPS with a self-signed certificate
@@ -93,6 +95,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-u`, `--url URL` | `PIHOLE_URL` | — | Pi-hole base URL, e.g. `http://pihole.lan` or `https://pihole.lan:8443`. The API is at `URL/api`. A missing scheme becomes `http://`, a trailing `/admin` is removed. |
 | `-c`, `--client ADDR` | `PIHOLE_CLIENT` | every client | client IP or hostname |
 | `-a`, `--all-clients` | — | — | report every client, even when a default client is configured |
+| `-A`, `--alias NAME` | `PIHOLE_ALIAS` | — | friendly name of the client, written next to its address in the HTML report. It needs a client, so `--all-clients` clears it. |
 | `-s`, `--status SET` | `PIHOLE_STATUS` | `blocked` | which queries to export — see the table below |
 | `-t`, `--hours N` | `PIHOLE_HOURS` | `24` | time window, hours back from now |
 | `--since TS` | — | — | absolute start, in any format GNU `date -d` reads |
@@ -186,7 +189,12 @@ What the page gives you:
   a **Whois** button and links to Google, VirusTotal, urlscan.io, Netify and crt.sh.
 * **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
   CSV* saves it with the category column added.
-* **light and dark** — it follows the system theme and the button forces either one.
+* **light and dark** — the sun/moon button forces either one, otherwise the page follows the system
+  theme and the button follows with it.
+
+`--alias` gives the client a name you recognise. The report then reads *pihole-peek · 192.0.2.70
+**living room TV***, the browser tab carries the name, and *Download CSV* uses it in the file name.
+An address tells you which device answered; the alias tells you which device it is.
 
 ### The domain categories
 

@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -37,6 +37,8 @@ Options:
                        reported and a CLIENT column is added
   -a, --all-clients    report every client, even if the config file or the
                        environment sets a default client
+  -A, --alias NAME     friendly name of the client, written next to its address
+                       in the html report (needs --client)
   -s, --status SET     blocked (default) | allowed | cached | all,
                        or a comma separated list of FTL statuses
                        (e.g. GRAVITY,DENYLIST)
@@ -55,6 +57,7 @@ Options:
 Environment:
   PIHOLE_URL           same as --url
   PIHOLE_CLIENT        same as --client
+  PIHOLE_ALIAS         same as --alias
   PIHOLE_PASSWORD      web password or app password (no flag, to keep it out
                        of the shell history)
   PIHOLE_PEEK_CONFIG   path of the config file (default: a file named
@@ -71,6 +74,7 @@ EOF
 # --------------------------------------------------------------------------
 env_url="${PIHOLE_URL:-}"
 env_client="${PIHOLE_CLIENT:-}"
+env_alias="${PIHOLE_ALIAS:-}"
 env_password="${PIHOLE_PASSWORD:-}"
 
 CONFIG="${PIHOLE_PEEK_CONFIG:-$SELF_DIR/config}"
@@ -81,10 +85,12 @@ fi
 
 [[ -n "$env_url" ]]      && PIHOLE_URL="$env_url"
 [[ -n "$env_client" ]]   && PIHOLE_CLIENT="$env_client"
+[[ -n "$env_alias" ]]    && PIHOLE_ALIAS="$env_alias"
 [[ -n "$env_password" ]] && PIHOLE_PASSWORD="$env_password"
 
 URL="${PIHOLE_URL:-}"
 CLIENT="${PIHOLE_CLIENT:-}"
+ALIAS="${PIHOLE_ALIAS:-}"
 PASSWORD="${PIHOLE_PASSWORD:-}"
 STATUS="${PIHOLE_STATUS:-blocked}"
 HOURS="${PIHOLE_HOURS:-24}"
@@ -101,7 +107,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -u|--url)      URL="${2:?--url needs a value}"; shift 2 ;;
         -c|--client)   CLIENT="${2?--client needs a value}"; shift 2 ;;
-        -a|--all-clients) CLIENT=""; shift ;;
+        -a|--all-clients) CLIENT=""; ALIAS=""; shift ;;
+        -A|--alias)    ALIAS="${2?--alias needs a value}"; shift 2 ;;
         -s|--status)   STATUS="${2:?--status needs a value}"; shift 2 ;;
         -t|--hours)    HOURS="${2:?--hours needs a value}"; shift 2 ;;
         --since)       SINCE="${2:?--since needs a value}"; shift 2 ;;
@@ -131,6 +138,7 @@ API="$URL/api"
 [[ "$HOURS" =~ ^[0-9]+$ ]] || die "--hours needs a whole number: $HOURS"
 [[ "$TOP"   =~ ^[0-9]+$ ]] || die "--top needs a whole number: $TOP"
 case "$FORMAT" in count|list|csv|json|html|raw) ;; *) die "unknown format: $FORMAT" ;; esac
+[[ -n "$ALIAS" && -z "$CLIENT" ]] && die "--alias names one client, so it needs --client too"
 
 # --------------------------------------------------------------------------
 # HTTP helpers
@@ -350,6 +358,14 @@ body {
 header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px; }
 h1 span { color: var(--ink-3); font-weight: 400; }
+h1 em { font-style: normal; font-weight: 700; font-size: 1.08em; margin-left: 9px; letter-spacing: -.015em; }
+#theme {
+  width: 36px; height: 36px; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 15px; line-height: 1;
+}
+#theme:hover { background: var(--line-soft); }
+#theme:active { transform: scale(.94); }
 .meta { margin: 0; color: var(--ink-2); font-size: 12.5px; }
 .meta b { font-weight: 550; color: var(--ink); }
 .spacer { flex: 1 1 auto; }
@@ -433,7 +449,7 @@ footer a { color: var(--ink-2); }
     <p class="meta" id="h-meta"></p>
   </div>
   <div class="spacer"></div>
-  <button class="ghost" id="theme" title="Switch the theme">Theme</button>
+  <button class="ghost" id="theme" aria-label="Switch the theme"></button>
 </header>
 
 <section class="kpis">
@@ -656,6 +672,14 @@ function fill(sel, label, values) {
 
 function init() {
   $("h-sub").textContent = META.client ? "· " + META.client : "· all clients";
+  if (META.alias) {
+    const em = document.createElement("em");
+    em.textContent = META.alias;
+    $("h-sub").after(em);
+    document.title = "pihole-peek · " + META.alias;
+  } else if (META.client) {
+    document.title = "pihole-peek · " + META.client;
+  }
   $("h-meta").innerHTML =
     "<b>" + esc(META.host) + "</b> · " + esc(META.window) + " · status <b>" + esc(META.status) + "</b>" +
     (META.domain ? " · domain filter <b>" + esc(META.domain) + "</b>" : "") +
@@ -698,7 +722,8 @@ function init() {
                           { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "pihole-peek.csv";
+    a.download = "pihole-peek" +
+      (META.alias ? "-" + META.alias.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-|-$/g, "") : "") + ".csv";
     a.click();
     URL.revokeObjectURL(a.href);
   });
@@ -723,15 +748,24 @@ function init() {
     render();
   });
 
-  const saved = localStorage.getItem("pihole-peek-theme");
-  if (saved) document.documentElement.dataset.theme = saved;
+  const sysDark = matchMedia("(prefers-color-scheme: dark)");
+  const isDark = () => (document.documentElement.dataset.theme || (sysDark.matches ? "dark" : "light")) === "dark";
+  const paintTheme = () => {
+    const dark = isDark();
+    $("theme").textContent = dark ? "\u2600\uFE0F" : "\uD83C\uDF19";
+    $("theme").title = dark ? "Switch to the light theme" : "Switch to the dark theme";
+  };
+  try {
+    const saved = localStorage.getItem("pihole-peek-theme");
+    if (saved) document.documentElement.dataset.theme = saved;
+  } catch (e) {}
+  sysDark.addEventListener("change", paintTheme);
   $("theme").addEventListener("click", () => {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    const cur = document.documentElement.dataset.theme || (dark ? "dark" : "light");
-    const next = cur === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("pihole-peek-theme", next); } catch (e) {}
+    document.documentElement.dataset.theme = isDark() ? "light" : "dark";
+    try { localStorage.setItem("pihole-peek-theme", document.documentElement.dataset.theme); } catch (e) {}
+    paintTheme();
   });
+  paintTheme();
 
   render();
 }
@@ -766,7 +800,7 @@ case "$FORMAT" in
     ;;
   html)
     META_JSON="$(jq -nc --arg host "$URL" --arg window "$WINDOW" --arg status "$STATUS" \
-                        --arg client "$CLIENT" --arg domain "$DOMAIN_RE" \
+                        --arg client "$CLIENT" --arg alias "$ALIAS" --arg domain "$DOMAIN_RE" \
                         --arg generated "$(date '+%Y-%m-%d %H:%M')" \
                         --arg version "$VERSION" '$ARGS.named')"
     html_report
