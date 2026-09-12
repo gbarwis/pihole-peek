@@ -1,0 +1,6 @@
+# local configuration: it holds your own address and password
+config
+
+# Claude Code guidance and local session data
+CLAUDE.md
+.claude/

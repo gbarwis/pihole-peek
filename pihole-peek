@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+#
+# pihole-peek — report the DNS queries of a Pi-hole v6 client, grouped by domain.
+# https://github.com/nightwatch75/pihole-peek
+# SPDX-License-Identifier: MIT
+
+set -euo pipefail
+
+VERSION="1.0.0"
+PROG="${0##*/}"
+SELF="$(readlink -f "$0")"
+SELF_DIR="${SELF%/*}"
+
+die() { printf '%s: %s\n' "$PROG" "$1" >&2; exit "${2:-1}"; }
+
+# --------------------------------------------------------------------------
+# status groups
+# --------------------------------------------------------------------------
+BLOCKED_SET="GRAVITY GRAVITY_CNAME DENYLIST DENYLIST_CNAME REGEX REGEX_CNAME
+             EXTERNAL_BLOCKED_IP EXTERNAL_BLOCKED_NULL EXTERNAL_BLOCKED_NXRA
+             EXTERNAL_BLOCKED_EDE15 SPECIAL_DOMAIN"
+ALLOWED_SET="FORWARDED RETRIED RETRIED_DNSSEC"
+CACHED_SET="CACHE CACHE_STALE"
+KNOWN_SET="$BLOCKED_SET $ALLOWED_SET $CACHED_SET UNKNOWN IN_PROGRESS DBBUSY"
+
+usage() {
+    cat <<EOF
+$PROG $VERSION — report the DNS queries of a Pi-hole v6 client, grouped by domain.
+
+Usage:
+  $PROG [options]
+
+Options:
+  -u, --url URL        Pi-hole base URL, e.g. http://pihole.lan or
+                       https://pihole.lan:8443 (the API is at URL/api)
+  -c, --client ADDR    client IP or hostname; without it every client is
+                       reported and a CLIENT column is added
+  -a, --all-clients    report every client, even if the config file or the
+                       environment sets a default client
+  -s, --status SET     blocked (default) | allowed | cached | all,
+                       or a comma separated list of FTL statuses
+                       (e.g. GRAVITY,DENYLIST)
+  -t, --hours N        time window, hours back from now (default: 24)
+      --since TS       absolute start, any format 'date -d' accepts
+      --until TS       absolute end (default: now)
+  -d, --domain REGEX   keep only the domains that match REGEX
+  -n, --top N          keep only the first N rows
+  -f, --format FMT     count (default) | list | csv | json | raw
+      --list-clients   list the clients known to the Pi-hole and exit
+  -k, --insecure       accept a self-signed TLS certificate
+      --totp CODE      two-factor code, if the Pi-hole asks for it
+  -V, --version        print the version and exit
+  -h, --help           print this help and exit
+
+Environment:
+  PIHOLE_URL           same as --url
+  PIHOLE_CLIENT        same as --client
+  PIHOLE_PASSWORD      web password or app password (no flag, to keep it out
+                       of the shell history)
+  PIHOLE_PEEK_CONFIG   path of the config file (default: a file named
+                       'config' next to this script)
+
+Precedence: command line > environment > config file.
+
+Exit codes: 0 success · 1 error · 2 no query matches the filters.
+EOF
+}
+
+# --------------------------------------------------------------------------
+# configuration: config file, then environment, then flags
+# --------------------------------------------------------------------------
+env_url="${PIHOLE_URL:-}"
+env_client="${PIHOLE_CLIENT:-}"
+env_password="${PIHOLE_PASSWORD:-}"
+
+CONFIG="${PIHOLE_PEEK_CONFIG:-$SELF_DIR/config}"
+if [[ -f "$CONFIG" ]]; then
+    # shellcheck disable=SC1090
+    . "$CONFIG"
+fi
+
+[[ -n "$env_url" ]]      && PIHOLE_URL="$env_url"
+[[ -n "$env_client" ]]   && PIHOLE_CLIENT="$env_client"
+[[ -n "$env_password" ]] && PIHOLE_PASSWORD="$env_password"
+
+URL="${PIHOLE_URL:-}"
+CLIENT="${PIHOLE_CLIENT:-}"
+PASSWORD="${PIHOLE_PASSWORD:-}"
+STATUS="${PIHOLE_STATUS:-blocked}"
+HOURS="${PIHOLE_HOURS:-24}"
+FORMAT="${PIHOLE_FORMAT:-count}"
+INSECURE="${PIHOLE_INSECURE:-0}"
+SINCE=""
+UNTIL=""
+DOMAIN_RE=""
+TOP=0
+LIST_CLIENTS=0
+TOTP=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -u|--url)      URL="${2:?--url needs a value}"; shift 2 ;;
+        -c|--client)   CLIENT="${2?--client needs a value}"; shift 2 ;;
+        -a|--all-clients) CLIENT=""; shift ;;
+        -s|--status)   STATUS="${2:?--status needs a value}"; shift 2 ;;
+        -t|--hours)    HOURS="${2:?--hours needs a value}"; shift 2 ;;
+        --since)       SINCE="${2:?--since needs a value}"; shift 2 ;;
+        --until)       UNTIL="${2:?--until needs a value}"; shift 2 ;;
+        -d|--domain)   DOMAIN_RE="${2:?--domain needs a value}"; shift 2 ;;
+        -n|--top)      TOP="${2:?--top needs a value}"; shift 2 ;;
+        -f|--format)   FORMAT="${2:?--format needs a value}"; shift 2 ;;
+        --list-clients) LIST_CLIENTS=1; shift ;;
+        -k|--insecure) INSECURE=1; shift ;;
+        --totp)        TOTP="${2:?--totp needs a value}"; shift 2 ;;
+        -V|--version)  printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
+        -h|--help)     usage; exit 0 ;;
+        --)            shift; break ;;
+        *)             usage >&2; die "unknown option: $1" ;;
+    esac
+done
+
+command -v curl >/dev/null || die "curl is necessary"
+command -v jq   >/dev/null || die "jq is necessary"
+
+[[ -n "$URL" ]] || { usage >&2; die "no Pi-hole address: use --url, PIHOLE_URL or the config file"; }
+[[ "$URL" == http://* || "$URL" == https://* ]] || URL="http://$URL"
+URL="${URL%/}"
+URL="${URL%/admin}"
+API="$URL/api"
+
+[[ "$HOURS" =~ ^[0-9]+$ ]] || die "--hours needs a whole number: $HOURS"
+[[ "$TOP"   =~ ^[0-9]+$ ]] || die "--top needs a whole number: $TOP"
+case "$FORMAT" in count|list|csv|json|raw) ;; *) die "unknown format: $FORMAT" ;; esac
+
+# --------------------------------------------------------------------------
+# HTTP helpers
+# --------------------------------------------------------------------------
+CURL=(curl -sS -m 60)
+[[ "$INSECURE" == "1" ]] && CURL+=(-k)
+SID=""
+
+api_error() { jq -r 'if .error then "\(.error.message)\(if .error.hint then " (\(.error.hint))" else "" end)" else empty end' <<<"$1"; }
+
+api_get() {
+    local resp err
+    if [[ -n "$SID" ]]; then
+        resp="$("${CURL[@]}" -H "sid: $SID" "$1")" || die "cannot reach $API"
+    else
+        resp="$("${CURL[@]}" "$1")" || die "cannot reach $API"
+    fi
+    err="$(api_error "$resp")"
+    [[ -z "$err" ]] || die "API: $err"
+    printf '%s' "$resp"
+}
+
+logout() { [[ -n "$SID" ]] && "${CURL[@]}" -X DELETE -H "sid: $SID" "$API/auth" >/dev/null 2>&1 || true; }
+trap logout EXIT
+
+authenticate() {
+    local resp body
+    resp="$("${CURL[@]}" "$API/auth")" || die "cannot reach $API — is the address right?"
+    jq -e 'has("session")' >/dev/null <<<"$resp" 2>/dev/null \
+        || die "$API does not answer like a Pi-hole v6 API (v5 is not supported)"
+    if [[ "$(jq -r '.session.valid' <<<"$resp")" == "true" ]]; then
+        return 0                            # the Pi-hole has no password
+    fi
+    [[ -n "$PASSWORD" ]] || die "this Pi-hole asks for a password: set PIHOLE_PASSWORD"
+    body="$(jq -nc --arg p "$PASSWORD" --arg t "$TOTP" \
+            'if $t == "" then {password:$p} else {password:$p, totp:$t} end')"
+    resp="$("${CURL[@]}" -X POST -H 'content-type: application/json' --data "$body" "$API/auth")" \
+        || die "cannot reach $API"
+    SID="$(jq -r '.session.sid // empty' <<<"$resp")"
+    [[ -n "$SID" ]] || die "authentication failed: $(api_error "$resp" || echo 'wrong password')"
+}
+
+authenticate
+
+# --------------------------------------------------------------------------
+# --list-clients
+# --------------------------------------------------------------------------
+if [[ "$LIST_CLIENTS" == "1" ]]; then
+    api_get "$API/stats/top_clients?count=1000&blocked=false" \
+        | jq -r '"CLIENT           NAME                           QUERIES",
+                 (.clients[] | [.ip, (if .name == "" then "-" else .name end), .count]
+                  | "\(.[0])\(" " * ([1, 17 - (.[0]|length)] | max))\(.[1])\(" " * ([1, 31 - (.[1]|length)] | max))\(.[2])")'
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
+# status set
+# --------------------------------------------------------------------------
+resolve_status() {
+    local want="${1,,}" s out=""
+    case "$want" in
+        blocked) echo "$BLOCKED_SET"; return ;;
+        allowed|forwarded) echo "$ALLOWED_SET"; return ;;
+        cached)  echo "$CACHED_SET"; return ;;
+        all)     echo ""; return ;;
+    esac
+    for s in ${1//,/ }; do
+        s="${s^^}"
+        [[ " $KNOWN_SET " == *" $s "* ]] || die "unknown status: $s (try: blocked, allowed, cached, all, or an FTL status)"
+        out="$out $s"
+    done
+    echo "$out"
+}
+
+WANTED="$(resolve_status "$STATUS")"
+STATUS_COUNT="$(wc -w <<<"$WANTED")"
+STATUS_JSON="$(printf '%s\n' $WANTED | jq -Rsc 'split("\n") | map(select(length > 0))')"
+
+# --------------------------------------------------------------------------
+# time window
+# --------------------------------------------------------------------------
+NOW="$(date +%s)"
+if [[ -n "$UNTIL" ]]; then
+    TO="$(date -d "$UNTIL" +%s 2>/dev/null)" || die "--until is not a readable date: $UNTIL"
+else
+    TO="$NOW"
+fi
+if [[ -n "$SINCE" ]]; then
+    FROM="$(date -d "$SINCE" +%s 2>/dev/null)" || die "--since is not a readable date: $SINCE"
+    WINDOW="from $(date -d "@$FROM" '+%Y-%m-%d %H:%M') to $(date -d "@$TO" '+%Y-%m-%d %H:%M')"
+else
+    FROM=$(( TO - HOURS * 3600 ))
+    WINDOW="last $HOURS h"
+fi
+[[ "$FROM" -lt "$TO" ]] || die "the time window is empty: --since is not before --until"
+
+# --------------------------------------------------------------------------
+# query
+# --------------------------------------------------------------------------
+QUERY="$API/queries?from=$FROM&until=$TO&length=1000000"
+[[ -n "$CLIENT" ]] && QUERY="$QUERY&client_ip=$(jq -rn --arg c "$CLIENT" '$c|@uri')"
+# the API takes one status only, so a group of statuses is filtered here below
+[[ "$STATUS_COUNT" -eq 1 ]] && QUERY="$QUERY&status=${WANTED// /}"
+
+RAW="$(api_get "$QUERY")"
+
+if [[ "$FORMAT" == "raw" ]]; then
+    jq . <<<"$RAW"
+    exit 0
+fi
+
+BYCLIENT=true; [[ -n "$CLIENT" ]] && BYCLIENT=false
+
+GROUPED="$(jq -c --argjson want "$STATUS_JSON" \
+              --argjson byclient "$BYCLIENT" \
+              --arg re "$DOMAIN_RE" '
+    [ .queries[]
+      | select(($want | length) == 0 or (.status as $s | $want | index($s)))
+      | select($re == "" or (.domain | test($re; "i"))) ]
+    | [ (if $byclient then group_by([.domain, .client.ip]) else group_by(.domain) end)[]
+        | { domain: .[0].domain,
+            client: (if $byclient then .[0].client.ip else null end),
+            hits:   length,
+            status: (map(.status) | unique | join("|")),
+            last:   (map(.time) | max) } ]
+    | sort_by(-.hits, .domain)' <<<"$RAW")"
+
+[[ "$TOP" -gt 0 ]] && GROUPED="$(jq -c --argjson n "$TOP" '.[:$n]' <<<"$GROUPED")"
+
+ROWS="$(jq 'length' <<<"$GROUPED")"
+if [[ "$ROWS" -eq 0 ]]; then
+    printf '%s: no query matches the filters (%s)\n' "$PROG" "$WINDOW" >&2
+    exit 2
+fi
+
+# --------------------------------------------------------------------------
+# output
+# --------------------------------------------------------------------------
+case "$FORMAT" in
+  list)
+    jq -r '[ .[].domain ] | unique[]' <<<"$GROUPED"
+    ;;
+  json)
+    jq --argjson byclient "$BYCLIENT" '
+        [ .[] | if $byclient
+                then { domain, client, hits, status, last_seen: (.last | todate) }
+                else { domain, hits, status, last_seen: (.last | todate) } end ]' <<<"$GROUPED"
+    ;;
+  csv)
+    if [[ "$BYCLIENT" == "true" ]]; then
+        echo "domain,client,hits,status,last_seen"
+        jq -r '.[] | [.domain, .client, .hits, .status, (.last|todate)] | @csv' <<<"$GROUPED"
+    else
+        echo "domain,hits,status,last_seen"
+        jq -r '.[] | [.domain, .hits, .status, (.last|todate)] | @csv' <<<"$GROUPED"
+    fi
+    ;;
+  count)
+    if [[ "$BYCLIENT" == "true" ]]; then
+        printf '%-52s %-16s %7s  %s\n' "DOMAIN" "CLIENT" "HITS" "LAST SEEN"
+    else
+        printf '%-52s %7s  %s\n' "DOMAIN" "HITS" "LAST SEEN"
+    fi
+    jq -r '.[] | [.domain, (.client // "-"), .hits, .last] | @tsv' <<<"$GROUPED" \
+    | while IFS=$'\t' read -r d c n t; do
+          seen="$(date -d "@${t%.*}" '+%Y-%m-%d %H:%M')"
+          if [[ "$BYCLIENT" == "true" ]]; then
+              printf '%-52s %-16s %7s  %s\n' "$d" "$c" "$n" "$seen"
+          else
+              printf '%-52s %7s  %s\n' "$d" "$n" "$seen"
+          fi
+      done
+    ndom="$(jq '[.[].domain] | unique | length' <<<"$GROUPED")"
+    nhit="$(jq '[.[].hits] | add' <<<"$GROUPED")"
+    printf '\n%s · %s · %s domain%s · %s quer%s · %s\n' \
+        "${CLIENT:-all clients}" "$STATUS" \
+        "$ndom" "$([[ $ndom -eq 1 ]] || echo s)" \
+        "$nhit" "$([[ $nhit -eq 1 ]] && echo y || echo ies)" \
+        "$WINDOW"
+    ;;
+esac

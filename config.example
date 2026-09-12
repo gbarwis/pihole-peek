@@ -1,0 +1,21 @@
+# pihole-peek configuration — copy to "config" next to the script and edit.
+# Shell syntax: KEY="value". The environment and the command line win over it.
+# Keep this file private if it holds a password:  chmod 600 config
+
+# Base URL of the Pi-hole. The API is at URL/api.
+PIHOLE_URL="http://pihole.example.lan"
+
+# Default client. Leave it out to report every client.
+#PIHOLE_CLIENT="192.0.2.70"
+
+# Web password or app password. Leave it out if the Pi-hole has no password.
+# An app password (Settings > Web interface / API) is better than the web one.
+#PIHOLE_PASSWORD="change-me"
+
+# Defaults for --status, --hours and --format.
+#PIHOLE_STATUS="blocked"
+#PIHOLE_HOURS="24"
+#PIHOLE_FORMAT="count"
+
+# Set to 1 to accept a self-signed TLS certificate (same as --insecure).
+#PIHOLE_INSECURE="0"
