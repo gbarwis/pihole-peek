@@ -103,6 +103,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-d`, `--domain REGEX` | — | — | keep only the domains that match the regex (case insensitive) |
 | `-n`, `--top N` | — | every row | keep only the first N rows |
 | `-f`, `--format FMT` | `PIHOLE_FORMAT` | `count` | `count`, `list`, `csv`, `json`, `html` or `raw` |
+| `--categories F` | `PIHOLE_PEEK_CATEGORIES` | a file named `categories` next to the script | extra category rules for the HTML report |
 | `--list-clients` | — | — | list the clients the Pi-hole knows, with their query count, and exit |
 | `-k`, `--insecure` | `PIHOLE_INSECURE` | off | accept a self-signed TLS certificate |
 | `--totp CODE` | — | — | two-factor code, when the Pi-hole asks for one |
@@ -192,6 +193,9 @@ What the page gives you:
   a **Whois** button and links to Google, VirusTotal, urlscan.io, Netify and crt.sh.
 * **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
   CSV* saves it with the state, the readable status and the category added.
+* **a legend at the foot of the page** — every FTL status with the sentence that explains it, every
+  category with what it covers, and the number of queries each one holds in this export. Values the
+  export does not contain stay greyed out, so the legend doubles as a reference.
 * **light and dark** — the sun/moon button forces either one, otherwise the page follows the system
   theme and the button follows with it.
 
@@ -223,19 +227,57 @@ anywhere. It is a hint for reading the table, not a verdict.
 
 | Category | What lands there |
 |---|---|
-| `ads` | ad exchanges and ad SDKs: doubleclick, applovin, moloco, vungle, criteo, `*.lgsmartad.com` … |
+| `ads` | ad exchanges and ad SDKs: doubleclick, applovin, moloco, vungle, criteo, openx … |
 | `acr` | automatic content recognition, the "what is on the screen" services of a smart TV: alphonso, samba.tv, inscape, gracenote |
-| `telemetry` | logs, metrics, beacons, crash and analytics endpoints: `logs.*`, `*.telemetry.*`, appsflyer, sentry, `unagi-*.amazon.com` |
-| `cdn` | cloudfront, akamai, fastly, cloudflare and the usual `cdn.*` names |
+| `tracking` | third-party analytics, attribution and monitoring: google-analytics, segment, appsflyer, sentry, onetrust … |
+| `telemetry` | the device talking about itself: `logs.*`, `*.telemetry.*`, `*.metrics.*`, beacons, crash reports |
+| `connectivity` | captive-portal and "am I online" checks |
+| `pki` | certificate validation: OCSP, CRL, timestamping |
+| `ntp` | clock synchronisation |
+| `dns` | public resolvers, DNS over HTTPS, DNS services |
+| `update` | firmware, packages and mirrors |
+| `smarthome` | connected devices and home automation: hue, tuya, shelly, sonos, smartthings … |
+| `gaming` | game platforms and stores |
+| `social` | social networks and messaging |
+| `ai` | assistants and language models |
+| `shopping` | shops and marketplaces |
 | `streaming` | the media services themselves: netflix, amazonvideo, youtube, spotify, twitch |
-| `vendor` | the device maker: lgtvcommon, lgappstv, lgtvsdp, samsung, tizen, roku, apple, microsoft |
-| `update` | firmware and package endpoints: `update.*`, `ota.*`, `dl.*`, mirrors |
+| `vendor` | services of the device maker: lgtvcommon, samsung, tizen, roku, apple, microsoft |
+| `cdn` | content delivery networks |
+| `cloud` | generic cloud, hosting and platform APIs |
 | `other` | everything the rules do not recognise |
 
-Only `ads`, `acr` and `telemetry` carry a colour — they are the three you usually look for. The
-other categories keep a neutral dot: the name is always written next to it, so the colour is never
-the only way to tell them apart. The three hues pass the colour-blindness and contrast checks in
-both themes.
+The rules are an **ordered list and the first match wins**, so the order is the specification:
+`logs.ads.vungle.com` is `ads`, not `telemetry`, because `ads` comes first. Hovering a category in
+the table shows the rule that chose it, and the detail panel writes it out.
+
+### Your own categories
+
+Drop a `categories` file next to the script, or point `--categories` at one. One rule per line:
+
+```sh
+<category>   <regex>
+```
+
+```sh
+# extend a category that already exists
+smarthome    my-thermostat|my-doorbell\.local
+# or invent one
+printer      brother|epsonconnect|hpeprint
+nas          synology|qnap|truenas
+# force a domain the built-in rules read the wrong way
+streaming    ^cdn-0\.example-video\.com$
+```
+
+The regex is case insensitive and tested against the whole domain. **Your rules are tried before the
+built-in ones, so they win**, and a rule that does not compile is reported in the legend instead of
+breaking the page. `config.example` has a `categories.example` next to it to start from; the
+`categories` file itself is in `.gitignore`.
+
+Four categories carry a colour: `ads` orange, `acr` aqua, and `tracking` and `telemetry` sharing
+the blue — both mean the same thing, data about the device leaving the network. Three hues is what
+clears the colour-blindness and contrast checks in both themes, so every other category keeps a
+neutral dot and relies on its written name.
 
 ### The Whois button
 

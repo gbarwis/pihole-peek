@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -48,6 +48,8 @@ Options:
   -d, --domain REGEX   keep only the domains that match REGEX
   -n, --top N          keep only the first N rows
   -f, --format FMT     count (default) | list | csv | json | html | raw
+      --categories F   extra category rules for the html report (default: a file
+                       named 'categories' next to this script, when it exists)
       --list-clients   list the clients known to the Pi-hole and exit
   -k, --insecure       accept a self-signed TLS certificate
       --totp CODE      two-factor code, if the Pi-hole asks for it
@@ -62,6 +64,7 @@ Environment:
                        of the shell history)
   PIHOLE_PEEK_CONFIG   path of the config file (default: a file named
                        'config' next to this script)
+  PIHOLE_PEEK_CATEGORIES  same as --categories
 
 Precedence: command line > environment > config file.
 
@@ -102,6 +105,7 @@ DOMAIN_RE=""
 TOP=0
 LIST_CLIENTS=0
 TOTP=""
+CATEGORIES="${PIHOLE_PEEK_CATEGORIES:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -116,6 +120,7 @@ while [[ $# -gt 0 ]]; do
         -d|--domain)   DOMAIN_RE="${2:?--domain needs a value}"; shift 2 ;;
         -n|--top)      TOP="${2:?--top needs a value}"; shift 2 ;;
         -f|--format)   FORMAT="${2:?--format needs a value}"; shift 2 ;;
+        --categories)  CATEGORIES="${2:?--categories needs a value}"; shift 2 ;;
         --list-clients) LIST_CLIENTS=1; shift ;;
         -k|--insecure) INSECURE=1; shift ;;
         --totp)        TOTP="${2:?--totp needs a value}"; shift 2 ;;
@@ -277,6 +282,21 @@ if [[ "$ROWS" -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
+# extra category rules: "<category> <regex>" per line, '#' starts a comment.
+# They are tried before the built-in rules, so they win.
+# --------------------------------------------------------------------------
+user_rules_json() {
+    local file="${CATEGORIES:-$SELF_DIR/categories}"
+    [[ -r "$file" ]] || { printf '[]'; return; }
+    sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$file" \
+    | jq -Rsc 'split("\n")
+               | map(select(length > 0)
+                     | sub("^[[:space:]]+"; "")
+                     | [ (capture("^(?<c>[^[:space:]]+)[[:space:]]+(?<r>.+)$") | .c, .r) ]
+                     | select(length == 2))'
+}
+
+# --------------------------------------------------------------------------
 # html report: one self-contained file, no CDN, no network until you click
 # --------------------------------------------------------------------------
 html_report() {
@@ -421,13 +441,15 @@ td.client { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 
 .chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
 .st { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
-.sw { width: 11px; height: 11px; border-radius: 3px; flex: none; background: var(--st-quiet); }
+.sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+      flex: none; background: var(--st-quiet); }
 .sw.blocked { background: var(--st-blocked); }
 .sw.forwarded { background: var(--st-forwarded); }
 .sw.mixed { background: var(--st-mixed); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat-none); flex: none; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+       background: var(--cat-none); flex: none; }
 .dot.ads { background: var(--cat-ads); }
-.dot.telemetry { background: var(--cat-tel); }
+.dot.tel { background: var(--cat-tel); }
 .dot.acr { background: var(--cat-acr); }
 
 .hits { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
@@ -446,6 +468,25 @@ tr.detail td { background: var(--surface); padding: 0; border-bottom: 1px solid 
 .whois b { color: var(--ink); font-weight: 550; }
 .whois .err { color: var(--ink-3); }
 
+.legend { margin-top: 26px; background: var(--card); border: 1px solid var(--line);
+          border-radius: 12px; box-shadow: var(--shadow); padding: 4px 18px 18px; }
+.legend > summary { cursor: pointer; padding: 14px 0 12px; font-size: 13px; font-weight: 600;
+                    letter-spacing: -.005em; list-style: none; }
+.legend > summary::-webkit-details-marker { display: none; }
+.legend > summary::before { content: "\25b8"; display: inline-block; width: 14px; color: var(--ink-3); }
+.legend[open] > summary::before { transform: rotate(90deg); }
+.legend h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+             color: var(--ink-3); margin: 16px 0 8px; font-weight: 600; }
+.legend .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 4px 34px; }
+.legend table { border-collapse: collapse; width: 100%; min-width: 0; font-size: 12.5px; }
+.legend td { padding: 4px 10px 4px 0; border: 0; vertical-align: baseline; color: var(--ink-2); }
+.legend td.k { white-space: nowrap; color: var(--ink); font-weight: 550; }
+.legend td.c { width: 1px; padding-right: 8px; }
+.legend tr.off { opacity: .45; }
+.legend .n { color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.legend p { font-size: 12.5px; color: var(--ink-2); margin: 14px 0 0; }
+.legend code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.legend .warn { color: var(--st-blocked); }
 footer { margin-top: 20px; color: var(--ink-3); font-size: 12px; }
 footer a { color: var(--ink-2); }
 .empty { padding: 40px 16px; text-align: center; color: var(--ink-3); }
@@ -502,6 +543,21 @@ footer a { color: var(--ink-2); }
   <div class="empty" id="empty" hidden>No domain matches the filters.</div>
 </div>
 
+<details class="legend" id="legend" open>
+  <summary>Legend — what the columns mean</summary>
+  <div class="cols">
+    <div>
+      <h3>Status — what the Pi-hole did with the query</h3>
+      <table id="lg-status"></table>
+    </div>
+    <div>
+      <h3>Category — what the domain is</h3>
+      <table id="lg-cats"></table>
+    </div>
+  </div>
+  <p id="lg-note"></p>
+</details>
+
 <footer>
   Generated by <a href="https://github.com/nightwatch75/pihole-peek">pihole-peek</a>
   <span id="f-ver"></span>. The category is guessed locally from the domain name; Whois asks
@@ -511,7 +567,8 @@ footer a { color: var(--ink-2); }
 </div>
 <script>
 PEEK_HTML_HEAD
-    printf 'const DATA = %s;\nconst META = %s;\n' "$GROUPED" "$META_JSON"
+    printf 'const DATA = %s;\nconst META = %s;\nconst USER_RULES = %s;\n' \
+           "$GROUPED" "$META_JSON" "$(user_rules_json)"
     cat <<'PEEK_HTML_TAIL'
 </script>
 <script>
@@ -519,41 +576,108 @@ PEEK_HTML_HEAD
 
 /* ---- category rules: first match wins; the label is always shown, the colour
    is only a second encoding for the three groups that matter on a home network. */
+/* Category rules: [name, what it covers, regex]. The first match wins, so the
+   order is the specification. Rules from the categories file are tried first. */
 const RULES = [
-  ["ads", /(^|\.)(ads?|adserver|adservice|adsystem|advert(ising)?)[.-]|doubleclick|googleads|googlesyndication|googleadservices|admob|applovin|applvn|adcolony|unityads|vungle|moloco|inmobi|pubmatic|rubiconproject|criteo|taboola|outbrain|smaato|mopub|adsafeprotected|2mdn|adnxs|smartadserver|amazon-adsystem|smartad|adtech|adsrvr/i],
-  ["acr", /alphonso|samba\.tv|inscape|gracenote|vizbee|nielsen|(^|[.-])acr[.-]/i],
-  ["telemetry", /(^|[.-])(telemetry|metrics?|logs?|log|events?|ingest|collector?|diag(nostic)?s?|insights?|beacon|rum|stats?|report(ing)?|crash(es)?|analytics?|tracking|pixel)([.-]|$)|google-analytics|segment\.(io|com)|mixpanel|amplitude|appsflyer|adjust\.com|branch\.io|kochava|crashlytics|scorecardresearch|quantserve|chartbeat|hotjar|matomo|flurry|braze|onetrust|cookielaw|clarity\.ms|sentry|bugsnag|newrelic|datadoghq|unagi|customerevents|minerva/i],
-  ["cdn", /cloudfront|akamai|akamaized|edgekey|edgesuite|fastly|llnwd|cachefly|jsdelivr|cloudflare|(^|[.-])cdn[.-]|[.-]cdn\./i],
-  ["streaming", /netflix|nflx|youtube|googlevideo|primevideo|amazonvideo|hulu|disney|dazn|spotify|twitch|plex|ttvnw|deezer/i],
-  ["vendor", /lgtvcommon|lgappstv|lgwebos|lgtvsdp|lgsmart|lge\.com|samsungcloudsolution|samsungotn|samsungrm|samsungqbe|tizen|roku|vidaahub|whaleos|philips|vestel|sony|panasonic|xiaomi|miui|apple\.com|icloud|microsoft|windowsupdate/i],
-  ["update", /(^|[.-])(update|updates|ota|swupdate|firmware|download|dl|pkg|repo|mirrors?)([.-]|$)/i]
+  ["ads", "ad exchanges and ad SDKs",
+   /(^|\.)(ads?|adserver|adservice|adsystem|advert(ising)?)[.-]|doubleclick|googleads|googlesyndication|googleadservices|admob|applovin|applvn|adcolony|unityads|vungle|moloco|inmobi|pubmatic|rubiconproject|criteo|taboola|outbrain|smaato|mopub|adsafeprotected|2mdn|adnxs|smartadserver|amazon-adsystem|smartad|adtech|adsrvr|teads|sharethrough|openx|indexexchange/i],
+  ["acr", "automatic content recognition: what is on the screen",
+   /alphonso|samba\.tv|inscape|gracenote|vizbee|nielsen|(^|[.-])acr[.-]/i],
+  ["tracking", "third-party analytics, attribution and monitoring",
+   /google-?analytics|googletagmanager|segment\.(io|com)|mixpanel|amplitude|appsflyer|adjust\.com|branch\.io|kochava|singular\.net|scorecardresearch|quantserve|chartbeat|hotjar|matomo|statcounter|flurry|braze|onetrust|cookielaw|clarity\.ms|fullstory|heap(analytics)?\.io|optimizely|mparticle|tealium|adobedtm|omtrdc|demdex|krxd|bluekai|liveramp|newrelic|datadoghq|sentry\.io|bugsnag|crashlytics/i],
+  ["telemetry", "logs, metrics, beacons and crash reports of the device itself",
+   /(^|[.-])(telemetry|metrics?|logs?|log|events?|ingest|collector?|diag(nostic)?s?|insights?|beacon|rum|stats?|report(ing)?|crash(es)?|pixel)([.-]|$)|unagi|customerevents|minerva/i],
+  ["connectivity", "captive portal and “am I online” checks",
+   /connectivitycheck|connecttest|detectportal|captive|nmcheck|clients[0-9]\.google\.com|networkcheck/i],
+  ["pki", "certificate validation: OCSP, CRL, timestamping",
+   /(^|[.-])(ocsp|crl|pki|crt|aia)[.-]|digicert|letsencrypt|sectigo|globalsign|godaddy\.com\/repository|entrust\.net/i],
+  ["ntp", "clock synchronisation",
+   /(^|[.-])(ntp|time)([.-]|$)|pool\.ntp\.org|time\.(windows|apple|google|cloudflare)\.com/i],
+  ["dns", "public resolvers, DNS over HTTPS and DNS services",
+   /(^|[.-])(dns|doh|resolver)[.-]|dns\.google|one\.one\.one\.one|quad9|nextdns|adguard-dns|opendns|dnscrypt/i],
+  ["update", "firmware, packages and mirrors",
+   /(^|[.-])(update|updates|ota|swupdate|firmware|download|dl|pkg|repo|mirrors?)([.-]|$)|archlinux|debian\.org|ubuntu\.com|fedoraproject|windowsupdate|gvt1\.com/i],
+  ["smarthome", "connected devices and home automation",
+   /meethue|(^|[.-])hue[.-]|tuya|shelly|sonos|tplinkcloud|kasa(smart)?|ring\.com|nest\.com|ecobee|home-?assistant|smartthings|aqara|govee|wyze|tado|netatmo|ifttt|miio|mi(jia|home)/i],
+  ["gaming", "game platforms and stores",
+   /steam(powered|static|community)|playstation|xboxlive|xbox\.com|nintendo|epicgames|ubisoft|battle\.net|roblox|minecraft|riotgames|ea\.com/i],
+  ["social", "social networks and messaging",
+   /facebook|fbcdn|instagram|whatsapp|tiktok|bytedance|musical\.ly|twitter|snapchat|linkedin|pinterest|reddit|discord|telegram|mastodon/i],
+  ["ai", "assistants and language models",
+   /openai|anthropic|claude\.ai|gemini\.google|bard\.google|copilot|perplexity|huggingface|alexa|siri|assistant\.google|voice-?service/i],
+  ["shopping", "shops and marketplaces",
+   /(^|\.)amazon\.[a-z]{2,3}(\.[a-z]{2})?$|ebay|aliexpress|alibaba|shopify|zalando|etsy|temu|shein|wish\.com/i],
+  ["streaming", "the media services themselves",
+   /netflix|nflx|youtube|googlevideo|primevideo|amazonvideo|hulu|disney|dazn|spotify|twitch|plex|ttvnw|deezer|tidal|iplayer|pluto\.tv|rakuten\.tv|raiplay|mediaset|skyshowtime/i],
+  ["vendor", "services of the device maker",
+   /lgtvcommon|lgappstv|lgwebos|lgtvsdp|lgsmart|lge\.com|samsungcloudsolution|samsungotn|samsungrm|samsungqbe|tizen|roku|vidaahub|whaleos|philips|vestel|hisense|(^|[.-])tcl[.-]|sony|panasonic|xiaomi|apple\.com|icloud|microsoft|windows\.com|android\.com/i],
+  ["cdn", "content delivery networks",
+   /cloudfront|akamai|akamaized|edgekey|edgesuite|fastly|llnwd|cachefly|jsdelivr|unpkg|cloudflare|bunnycdn|stackpath|ssl-images-amazon|media-amazon|ytimg|gvt[0-9]|(^|[.-])cdn[.-]|[.-]cdn\./i],
+  ["cloud", "generic cloud, hosting and platform APIs",
+   /amazonaws|a2z\.com|azure|windows\.net|googleapis|gstatic|appspot|herokuapp|digitalocean|linode|vultr|hetzner|\.ovh\b/i]
 ];
-const CATS = ["ads", "acr", "telemetry", "cdn", "streaming", "vendor", "update", "other"];
+
+/* Two categories share the blue: both mean "data about this device leaves the
+   network". Three hues is what the colour-blind and contrast checks clear, so
+   every other category keeps a neutral dot and relies on its written name. */
+const CAT_COLOUR = { ads: "ads", acr: "acr", telemetry: "tel", tracking: "tel" };
+
+const USER_RULE_ERRORS = [];
+const COMPILED_USER = (typeof USER_RULES === "undefined" ? [] : USER_RULES)
+  .map(([name, src]) => {
+    try { return [name, new RegExp(src, "i"), src]; }
+    catch (e) { USER_RULE_ERRORS.push(name + " " + src + " — " + e.message); return null; }
+  }).filter(Boolean);
+
+const CATS = [...new Set([...COMPILED_USER.map(r => r[0]), ...RULES.map(r => r[0]), "other"])];
 
 /* what every FTL status means, and which state it belongs to. The swatch is a
    second encoding only: the wording next to it always says what happened. */
 const STATUS = {
-  GRAVITY:                ["blocked",   "blocked \u00b7 blocklist"],
-  GRAVITY_CNAME:          ["blocked",   "blocked \u00b7 CNAME in a blocklist"],
-  DENYLIST:               ["blocked",   "blocked \u00b7 your rule"],
-  DENYLIST_CNAME:         ["blocked",   "blocked \u00b7 CNAME of your rule"],
-  REGEX:                  ["blocked",   "blocked \u00b7 your regex"],
-  REGEX_CNAME:            ["blocked",   "blocked \u00b7 CNAME of your regex"],
-  EXTERNAL_BLOCKED_IP:    ["blocked",   "blocked \u00b7 by the upstream"],
-  EXTERNAL_BLOCKED_NULL:  ["blocked",   "blocked \u00b7 by the upstream"],
-  EXTERNAL_BLOCKED_NXRA:  ["blocked",   "blocked \u00b7 by the upstream"],
-  EXTERNAL_BLOCKED_EDE15: ["blocked",   "blocked \u00b7 by the upstream"],
-  SPECIAL_DOMAIN:         ["blocked",   "blocked \u00b7 special domain"],
-  FORWARDED:              ["forwarded", "forwarded \u00b7 asked the upstream"],
-  RETRIED:                ["forwarded", "forwarded \u00b7 retried"],
-  RETRIED_DNSSEC:         ["forwarded", "forwarded \u00b7 DNSSEC retry"],
-  CACHE:                  ["cached",    "cached \u00b7 answered locally"],
-  CACHE_STALE:            ["cached",    "cached \u00b7 stale answer"],
+  GRAVITY:                ["blocked",   "blocked · blocklist"],
+  GRAVITY_CNAME:          ["blocked",   "blocked · CNAME in a blocklist"],
+  DENYLIST:               ["blocked",   "blocked · your rule"],
+  DENYLIST_CNAME:         ["blocked",   "blocked · CNAME of your rule"],
+  REGEX:                  ["blocked",   "blocked · your regex"],
+  REGEX_CNAME:            ["blocked",   "blocked · CNAME of your regex"],
+  EXTERNAL_BLOCKED_IP:    ["blocked",   "blocked · by the upstream"],
+  EXTERNAL_BLOCKED_NULL:  ["blocked",   "blocked · by the upstream"],
+  EXTERNAL_BLOCKED_NXRA:  ["blocked",   "blocked · by the upstream"],
+  EXTERNAL_BLOCKED_EDE15: ["blocked",   "blocked · by the upstream"],
+  SPECIAL_DOMAIN:         ["blocked",   "blocked · special domain"],
+  FORWARDED:              ["forwarded", "forwarded · asked the upstream"],
+  RETRIED:                ["forwarded", "forwarded · retried"],
+  RETRIED_DNSSEC:         ["forwarded", "forwarded · DNSSEC retry"],
+  CACHE:                  ["cached",    "cached · answered locally"],
+  CACHE_STALE:            ["cached",    "cached · stale answer"],
   IN_PROGRESS:            ["other",     "in progress"],
   DBBUSY:                 ["other",     "database busy"],
   UNKNOWN:                ["other",     "unknown"]
 };
 const KINDS = ["blocked", "forwarded", "cached", "mixed", "other"];
+
+/* one sentence per FTL status, for the legend */
+const STATUS_WHY = {
+  GRAVITY:                "the domain is on one of your blocklists",
+  GRAVITY_CNAME:          "the domain is clean, but its CNAME points to a blocked one",
+  DENYLIST:               "one of your own exact rules stopped it",
+  DENYLIST_CNAME:         "its CNAME target matches one of your own rules",
+  REGEX:                  "one of your regular expressions stopped it",
+  REGEX_CNAME:            "its CNAME target matches one of your regular expressions",
+  EXTERNAL_BLOCKED_IP:    "the upstream resolver answered with a blocking address",
+  EXTERNAL_BLOCKED_NULL:  "the upstream resolver answered 0.0.0.0 or ::",
+  EXTERNAL_BLOCKED_NXRA:  "the upstream answered NXDOMAIN with no recursion available",
+  EXTERNAL_BLOCKED_EDE15: "the upstream said “blocked” with EDNS error 15",
+  SPECIAL_DOMAIN:         "a special-use domain the Pi-hole answers by itself",
+  FORWARDED:              "the Pi-hole asked the upstream resolver",
+  RETRIED:                "the query was sent again",
+  RETRIED_DNSSEC:         "the query was sent again to validate DNSSEC",
+  CACHE:                  "answered from the local cache, nothing left the network",
+  CACHE_STALE:            "answered from an expired cache entry while it was refreshed",
+  IN_PROGRESS:            "the same query was already on its way",
+  DBBUSY:                 "the database was busy, the query was not stored",
+  UNKNOWN:                "FTL did not classify it"
+};
 
 function statusOf(raw) {
   const parts = raw.split("|");
@@ -561,13 +685,14 @@ function statusOf(raw) {
   if (kinds.length > 1)
     return ["mixed", KINDS.filter(k => kinds.includes(k)).join(" + ")];
   if (parts.length === 1) return STATUS[parts[0]] || ["other", parts[0].toLowerCase()];
-  return [kinds[0], kinds[0] + " \u00b7 " + parts.length + " statuses"];
+  return [kinds[0], kinds[0] + " · " + parts.length + " statuses"];
 }
-const COLOURED = { ads: 1, acr: 1, telemetry: 1 };
+
 
 function classify(d) {
-  for (const [name, re] of RULES) if (re.test(d)) return name;
-  return "other";
+  for (const [name, re, src] of COMPILED_USER) if (re.test(d)) return [name, "your rule: /" + src + "/"];
+  for (const [name, , re] of RULES) if (re.test(d)) return [name, "built-in rule: /" + re.source + "/"];
+  return ["other", "no rule matched"];
 }
 
 /* registrable name: what Whois and Netify want, e.g. eic.x.lgtvcommon.com -> lgtvcommon.com */
@@ -589,7 +714,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c =>
 
 /* ---- state ---------------------------------------------------------- */
 DATA.forEach(r => {
-  r.category = classify(r.domain);
+  [r.category, r.rule] = classify(r.domain);
   [r.kind, r.statusLabel] = statusOf(r.status);
 });
 let sortKey = "hits", sortDir = -1, openKey = null;
@@ -628,7 +753,8 @@ function render() {
       '<td class="dom">' + esc(r.domain) + '</td>' +
       '<td><span class="st" title="' + esc(r.status) + '"><span class="sw ' + r.kind + '"></span>' +
         esc(r.statusLabel) + '</span></td>' +
-      '<td><span class="chip"><span class="dot ' + (COLOURED[r.category] ? r.category : "") + '"></span>' + r.category + '</span></td>' +
+      '<td><span class="chip" title="' + esc(r.rule) + '"><span class="dot ' +
+        (CAT_COLOUR[r.category] || "") + '"></span>' + esc(r.category) + '</span></td>' +
       '<td class="client">' + esc(r.client || "-") + '</td>' +
       '<td class="num"><span class="hits"><span class="bar"><i style="width:' +
         Math.max(2, Math.round(r.hits / max * 100)) + '%"></i></span>' + fmtN(r.hits) + '</span></td>' +
@@ -660,6 +786,7 @@ function detailRow(r) {
         '<span>queries <b>' + fmtN(r.hits) + '</b></span>' +
         '<span>status <b>' + esc(r.status) + '</b></span>' +
         '<span>registrable name <b>' + esc(reg) + '</b></span>' +
+        '<span>category <b>' + esc(r.category) + '</b> \u2014 ' + esc(r.rule) + '</span>' +
       '</div>' +
       '<div class="links">' +
         '<span class="lbl">Look up</span>' +
@@ -834,8 +961,53 @@ function init() {
   });
   paintTheme();
 
+  legend();
   render();
 }
+
+function legend() {
+  const hits = {}, catHits = {};
+  DATA.forEach(r => {
+    r.status.split("|").forEach(st => { hits[st] = (hits[st] || 0) + r.hits; });
+    catHits[r.category] = (catHits[r.category] || 0) + r.hits;
+  });
+
+  $("lg-status").innerHTML = Object.keys(STATUS).map(st => {
+    const [kind, label] = STATUS[st];
+    const n = hits[st] || 0;
+    return '<tr class="' + (n ? "" : "off") + '">' +
+      '<td class="c"><span class="sw ' + kind + '"></span></td>' +
+      '<td class="k">' + st + "</td>" +
+      "<td>" + esc(label.replace(/^[a-z]+ \u00b7 /, "")) + " \u2014 " + esc(STATUS_WHY[st] || "") + "</td>" +
+      '<td class="n">' + (n ? fmtN(n) : "\u2013") + "</td></tr>";
+  }).join("") +
+    '<tr><td class="c"><span class="sw mixed"></span></td><td class="k">mixed</td>' +
+    "<td>the domain had more than one state inside the window; the row lists them</td>" +
+    '<td class="n">\u2013</td></tr>';
+
+  const seen = new Set(DATA.map(r => r.category));
+  const known = RULES.map(([name, what]) => [name, what]);
+  COMPILED_USER.forEach(([name]) => { if (!known.some(k => k[0] === name)) known.push([name, "your own rule"]); });
+  known.push(["other", "no rule matched this domain"]);
+  $("lg-cats").innerHTML = known.map(([name, what]) => {
+    const n = catHits[name] || 0;
+    return '<tr class="' + (seen.has(name) ? "" : "off") + '">' +
+      '<td class="c"><span class="dot ' + (CAT_COLOUR[name] || "") + '"></span></td>' +
+      '<td class="k">' + esc(name) + "</td><td>" + esc(what) + "</td>" +
+      '<td class="n">' + (n ? fmtN(n) : "\u2013") + "</td></tr>";
+  }).join("");
+
+  $("lg-note").innerHTML =
+    "A grey row is a value this export does not contain. The status colour says what happened, the " +
+    "category colour says what the domain is: both always carry their name in writing, so neither " +
+    "leans on colour alone. Hovering a category shows the rule that chose it." +
+    "<br>Add your own categories in <code>" + esc(META.categories || "categories") + "</code>, one " +
+    "rule per line, <code>&lt;category&gt; &lt;regex&gt;</code>. Your rules are tried first, so they win." +
+    (USER_RULE_ERRORS.length
+      ? '<br><span class="warn">Rules that did not compile: ' + esc(USER_RULE_ERRORS.join("; ")) + "</span>"
+      : "");
+}
+
 init();
 </script>
 </body>
@@ -869,7 +1041,8 @@ case "$FORMAT" in
     META_JSON="$(jq -nc --arg host "$URL" --arg window "$WINDOW" --arg status "$STATUS" \
                         --arg client "$CLIENT" --arg alias "$ALIAS" --arg domain "$DOMAIN_RE" \
                         --arg generated "$(date '+%Y-%m-%d %H:%M')" \
-                        --arg version "$VERSION" '$ARGS.named')"
+                        --arg version "$VERSION" \
+                        --arg categories "${CATEGORIES:-$SELF_DIR/categories}" '$ARGS.named')"
     html_report
     ;;
   count)

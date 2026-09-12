@@ -1,0 +1,21 @@
+# pihole-peek — extra category rules for the html report.
+# Copy to "categories" next to the script, or point --categories at it.
+#
+#   <category>   <regex>
+#
+# One rule per line. The regex is case insensitive and it is tested against the
+# whole domain. Everything after a '#' is a comment.
+#
+# These rules are tried BEFORE the built-in ones, so they win: name a category
+# that already exists to extend it, or invent a new one.
+
+# extend a built-in category
+#smarthome    my-thermostat|my-doorbell\.local
+
+# invent a category of your own
+#printer      brother|epsonconnect|hpeprint
+#nas          synology|qnap|truenas
+#car          teslamotors|mercedes-benz|vw-connect
+
+# force a domain the built-in rules read the wrong way
+#streaming    ^cdn-0\.example-video\.com$

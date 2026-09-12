@@ -1,6 +1,9 @@
 # local configuration: it holds your own address and password
 config
 
+# local category rules
+categories
+
 # Claude Code guidance and local session data
 CLAUDE.md
 .claude/
