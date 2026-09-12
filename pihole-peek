@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -305,6 +305,11 @@ html_report() {
   --bar:          #2a78d6;
   --bar-track:    #efeeea;
   --shadow:       0 1px 2px rgba(11,11,11,.06), 0 4px 16px rgba(11,11,11,.04);
+  /* status palette: fixed, never themed - it means state, not identity */
+  --st-blocked:   #d03b3b;
+  --st-forwarded: #0ca30c;
+  --st-mixed:     #fab219;
+  --st-quiet:     #86847d;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -324,6 +329,7 @@ html_report() {
     --bar:        #3987e5;
     --bar-track:  #2b2b29;
     --shadow:     0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+    --st-quiet:   #8f8e85;
   }
 }
 :root[data-theme="dark"] {
@@ -343,6 +349,7 @@ html_report() {
   --bar:        #3987e5;
   --bar-track:  #2b2b29;
   --shadow:     0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+  --st-quiet:   #8f8e85;
 }
 
 * { box-sizing: border-box; }
@@ -392,7 +399,7 @@ button:hover { border-color: var(--ink-3); }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
 .scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; min-width: 680px; }
+table { border-collapse: collapse; width: 100%; min-width: 810px; }
 th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 thead th {
   position: sticky; top: 0; z-index: 2;
@@ -413,6 +420,11 @@ td.time, td.client { color: var(--ink-2); font-size: 12.5px; white-space: nowrap
 td.client { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
+.st { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
+.sw { width: 11px; height: 11px; border-radius: 3px; flex: none; background: var(--st-quiet); }
+.sw.blocked { background: var(--st-blocked); }
+.sw.forwarded { background: var(--st-forwarded); }
+.sw.mixed { background: var(--st-mixed); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat-none); flex: none; }
 .dot.ads { background: var(--cat-ads); }
 .dot.telemetry { background: var(--cat-tel); }
@@ -456,6 +468,7 @@ footer a { color: var(--ink-2); }
   <div class="kpi"><div class="n" id="k-queries">0</div><div class="l">Queries</div></div>
   <div class="kpi"><div class="n" id="k-domains">0</div><div class="l">Domains</div></div>
   <div class="kpi"><div class="n" id="k-clients">0</div><div class="l">Clients</div></div>
+  <div class="kpi"><div class="n" id="k-blocked">-</div><div class="l">Blocked</div></div>
   <div class="kpi"><div class="n" id="k-top">-</div><div class="l">Main category</div></div>
 </section>
 
@@ -476,6 +489,7 @@ footer a { color: var(--ink-2); }
       <thead>
         <tr>
           <th data-k="domain">Domain <span class="arrow"></span></th>
+          <th data-k="statusLabel">Status <span class="arrow"></span></th>
           <th data-k="category">Category <span class="arrow"></span></th>
           <th data-k="client">Client <span class="arrow"></span></th>
           <th data-k="hits" class="num" style="text-align:right">Hits <span class="arrow"></span></th>
@@ -515,6 +529,40 @@ const RULES = [
   ["update", /(^|[.-])(update|updates|ota|swupdate|firmware|download|dl|pkg|repo|mirrors?)([.-]|$)/i]
 ];
 const CATS = ["ads", "acr", "telemetry", "cdn", "streaming", "vendor", "update", "other"];
+
+/* what every FTL status means, and which state it belongs to. The swatch is a
+   second encoding only: the wording next to it always says what happened. */
+const STATUS = {
+  GRAVITY:                ["blocked",   "blocked \u00b7 blocklist"],
+  GRAVITY_CNAME:          ["blocked",   "blocked \u00b7 CNAME in a blocklist"],
+  DENYLIST:               ["blocked",   "blocked \u00b7 your rule"],
+  DENYLIST_CNAME:         ["blocked",   "blocked \u00b7 CNAME of your rule"],
+  REGEX:                  ["blocked",   "blocked \u00b7 your regex"],
+  REGEX_CNAME:            ["blocked",   "blocked \u00b7 CNAME of your regex"],
+  EXTERNAL_BLOCKED_IP:    ["blocked",   "blocked \u00b7 by the upstream"],
+  EXTERNAL_BLOCKED_NULL:  ["blocked",   "blocked \u00b7 by the upstream"],
+  EXTERNAL_BLOCKED_NXRA:  ["blocked",   "blocked \u00b7 by the upstream"],
+  EXTERNAL_BLOCKED_EDE15: ["blocked",   "blocked \u00b7 by the upstream"],
+  SPECIAL_DOMAIN:         ["blocked",   "blocked \u00b7 special domain"],
+  FORWARDED:              ["forwarded", "forwarded \u00b7 asked the upstream"],
+  RETRIED:                ["forwarded", "forwarded \u00b7 retried"],
+  RETRIED_DNSSEC:         ["forwarded", "forwarded \u00b7 DNSSEC retry"],
+  CACHE:                  ["cached",    "cached \u00b7 answered locally"],
+  CACHE_STALE:            ["cached",    "cached \u00b7 stale answer"],
+  IN_PROGRESS:            ["other",     "in progress"],
+  DBBUSY:                 ["other",     "database busy"],
+  UNKNOWN:                ["other",     "unknown"]
+};
+const KINDS = ["blocked", "forwarded", "cached", "mixed", "other"];
+
+function statusOf(raw) {
+  const parts = raw.split("|");
+  const kinds = [...new Set(parts.map(p => (STATUS[p] || ["other"])[0]))];
+  if (kinds.length > 1)
+    return ["mixed", KINDS.filter(k => kinds.includes(k)).join(" + ")];
+  if (parts.length === 1) return STATUS[parts[0]] || ["other", parts[0].toLowerCase()];
+  return [kinds[0], kinds[0] + " \u00b7 " + parts.length + " statuses"];
+}
 const COLOURED = { ads: 1, acr: 1, telemetry: 1 };
 
 function classify(d) {
@@ -540,7 +588,10 @@ const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 /* ---- state ---------------------------------------------------------- */
-DATA.forEach(r => { r.category = classify(r.domain); });
+DATA.forEach(r => {
+  r.category = classify(r.domain);
+  [r.kind, r.statusLabel] = statusOf(r.status);
+});
 let sortKey = "hits", sortDir = -1, openKey = null;
 
 const $ = id => document.getElementById(id);
@@ -553,7 +604,7 @@ function view() {
     (!q || r.domain.toLowerCase().includes(q)) &&
     (!c || r.client === c) &&
     (!k || r.category === k) &&
-    (!st || r.status.split("|").includes(st)));
+    (!st || (st.startsWith("kind:") ? r.kind === st.slice(5) : r.status.split("|").includes(st))));
   const dir = sortDir;
   rows.sort((a, b) => {
     let x = a[sortKey], y = b[sortKey];
@@ -575,6 +626,8 @@ function render() {
     if (key === openKey) tr.className = "open";
     tr.innerHTML =
       '<td class="dom">' + esc(r.domain) + '</td>' +
+      '<td><span class="st" title="' + esc(r.status) + '"><span class="sw ' + r.kind + '"></span>' +
+        esc(r.statusLabel) + '</span></td>' +
       '<td><span class="chip"><span class="dot ' + (COLOURED[r.category] ? r.category : "") + '"></span>' + r.category + '</span></td>' +
       '<td class="client">' + esc(r.client || "-") + '</td>' +
       '<td class="num"><span class="hits"><span class="bar"><i style="width:' +
@@ -597,7 +650,7 @@ function detailRow(r) {
   const tr = document.createElement("tr");
   tr.className = "detail";
   const td = document.createElement("td");
-  td.colSpan = 5;
+  td.colSpan = 6;
   const reg = registrable(r.domain), full = r.domain;
   td.innerHTML =
     '<div class="panel">' +
@@ -689,9 +742,17 @@ function init() {
   const clients = [...new Set(DATA.map(r => r.client).filter(Boolean))].sort();
   const cats = CATS.filter(c => DATA.some(r => r.category === c));
   const stats = [...new Set(DATA.flatMap(r => r.status.split("|")))].sort();
+  const kinds = KINDS.filter(k => DATA.some(r => r.kind === k));
   fill("f-client", "All clients (" + clients.length + ")", clients);
   fill("f-cat", "All categories", cats);
-  fill("f-status", "All statuses", stats);
+  $("f-status").innerHTML =
+    '<option value="">All statuses</option>' +
+    '<optgroup label="State">' +
+      kinds.map(k => '<option value="kind:' + k + '">' + k + "</option>").join("") +
+    "</optgroup>" +
+    '<optgroup label="Exact FTL status">' +
+      stats.map(v => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("") +
+    "</optgroup>";
 
   $("k-queries").textContent = fmtN(DATA.reduce((s, r) => s + r.hits, 0));
   $("k-domains").textContent = fmtN(new Set(DATA.map(r => r.domain)).size);
@@ -700,6 +761,10 @@ function init() {
   DATA.forEach(r => { byCat[r.category] = (byCat[r.category] || 0) + r.hits; });
   const top = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0];
   $("k-top").textContent = top ? top[0] : "-";
+  const blocked = DATA.filter(r => r.kind === "blocked").reduce((s2, r) => s2 + r.hits, 0);
+  const all = DATA.reduce((s2, r) => s2 + r.hits, 0);
+  $("k-blocked").textContent = all ? Math.round(blocked / all * 100) + "%" : "-";
+  $("k-blocked").title = fmtN(blocked) + " of " + fmtN(all) + " queries";
 
   ["q", "f-client", "f-cat", "f-status"].forEach(id =>
     $(id).addEventListener("input", () => { openKey = null; render(); }));
@@ -716,9 +781,11 @@ function init() {
   });
   $("csv").addEventListener("click", () => {
     const q = s => '"' + String(s).replace(/"/g, '""') + '"';
-    const body = view().map(r => [r.domain, r.category, r.client || "", r.hits, r.status,
+    const body = view().map(r => [r.domain, r.kind, r.statusLabel, r.category, r.client || "",
+                                  r.hits, r.status,
                                   new Date(r.last * 1000).toISOString()].map(q).join(","));
-    const blob = new Blob(["domain,category,client,hits,status,last_seen\n" + body.join("\n") + "\n"],
+    const blob = new Blob(["domain,state,status_label,category,client,hits,status,last_seen\n" +
+                           body.join("\n") + "\n"],
                           { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);

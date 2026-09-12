@@ -185,17 +185,36 @@ What the page gives you:
   The counter and the bar scale follow the selection.
 * **sortable columns** — click a header to sort by domain, category, client, hits or last seen;
   click again to turn the order around.
+* **a state for every row** — a coloured square and the wording that says what happened to that
+  domain, so a full export stays readable; see the table below.
 * **a category for every domain** — guessed locally from the name, see the table below.
 * **a look-up panel** — click a row: first seen, last seen, the statuses, the registrable name, then
   a **Whois** button and links to Google, VirusTotal, urlscan.io, Netify and crt.sh.
 * **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
-  CSV* saves it with the category column added.
+  CSV* saves it with the state, the readable status and the category added.
 * **light and dark** — the sun/moon button forces either one, otherwise the page follows the system
   theme and the button follows with it.
 
 `--alias` gives the client a name you recognise. The report then reads *pihole-peek · 192.0.2.70
 **living room TV***, the browser tab carries the name, and *Download CSV* uses it in the file name.
 An address tells you which device answered; the alias tells you which device it is.
+
+### The state of a row
+
+Since the export holds every status by default, each row says what the Pi-hole did with that
+domain. The square is only a second encoding — the wording is always there.
+
+| Square | State | What the row says |
+|---|---|---|
+| red | `blocked` | `blocked · blocklist`, `· your rule`, `· your regex`, `· CNAME …`, `· by the upstream` |
+| green | `forwarded` | `forwarded · asked the upstream`, `· retried`, `· DNSSEC retry` |
+| grey | `cached` | `cached · answered locally`, `· stale answer` |
+| amber | `mixed` | the domain had more than one state in the window, e.g. `forwarded + cached` |
+| grey | `other` | `in progress`, `database busy`, `unknown` |
+
+The status drop-down filters on either level: a **state** (blocked, forwarded, cached, mixed) or an
+**exact FTL status** (`GRAVITY`, `DENYLIST`, `CACHE_STALE` …). Hovering a square shows the raw
+statuses behind the row.
 
 ### The domain categories
 
