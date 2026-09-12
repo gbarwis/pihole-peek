@@ -3,7 +3,8 @@
 A small shell tool that asks the **Pi-hole v6 REST API** which domains a client resolved, and
 groups the answer by domain. It tells you what a device on your network talks to — the smart TV
 that phones home, the phone that runs an ad SDK, the IoT box that never stops — and it exports the
-result as a table, a plain domain list, CSV or JSON.
+result as a table, a plain domain list, CSV, JSON or a self-contained **HTML report** with live
+filters, sortable columns and a per-domain look-up.
 
 ```
 $ pihole-peek --client 192.0.2.70 --status blocked
@@ -78,6 +79,8 @@ pihole-peek                                      # every client, blocked, with a
 pihole-peek -n 20 -f csv > report.csv            # top 20 rows as CSV
 pihole-peek -d 'doubleclick|googleads' -s all    # only the domains that match a regex
 
+pihole-peek -s all -f html > report.html          # interactive report, open it in a browser
+
 pihole-peek --since '2026-09-12 00:00' --until '2026-09-12 08:00'
 pihole-peek -u https://pihole.example.lan:8443 -k    # HTTPS with a self-signed certificate
 pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own jq
@@ -96,7 +99,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `--until TS` | — | now | absolute end |
 | `-d`, `--domain REGEX` | — | — | keep only the domains that match the regex (case insensitive) |
 | `-n`, `--top N` | — | every row | keep only the first N rows |
-| `-f`, `--format FMT` | `PIHOLE_FORMAT` | `count` | `count`, `list`, `csv`, `json` or `raw` |
+| `-f`, `--format FMT` | `PIHOLE_FORMAT` | `count` | `count`, `list`, `csv`, `json`, `html` or `raw` |
 | `--list-clients` | — | — | list the clients the Pi-hole knows, with their query count, and exit |
 | `-k`, `--insecure` | `PIHOLE_INSECURE` | off | accept a self-signed TLS certificate |
 | `--totp CODE` | — | — | two-factor code, when the Pi-hole asks for one |
@@ -155,10 +158,69 @@ domain,hits,status,last_seen
 [{ "domain": "nrdp25.logs.netflix.com", "hits": 807, "status": "GRAVITY", "last_seen": "2026-09-11T21:35:28Z" }]
 ```
 
+**`html`** — a single self-contained file to open in a browser. See the next section.
+
+```sh
+pihole-peek -s all -f html > report.html && xdg-open report.html
+```
+
 **`raw`** — the API answer with no processing, for your own `jq`. Every field is there: query type,
 upstream, reply time, DNSSEC state, CNAME chain.
 
 With `--top N` the summary counts the rows that are shown, not the whole window.
+
+## The HTML report
+
+One file, no CDN, no build step: the data is embedded in the page, so the report keeps working
+offline, on a USB stick or in an email. `--format html` always keeps the client of every row, so the
+client filter works even when `--client` already narrowed the export.
+
+What the page gives you:
+
+* **live filters** — free text on the domain, plus a drop-down for client, category and FTL status.
+  The counter and the bar scale follow the selection.
+* **sortable columns** — click a header to sort by domain, category, client, hits or last seen;
+  click again to turn the order around.
+* **a category for every domain** — guessed locally from the name, see the table below.
+* **a look-up panel** — click a row: first seen, last seen, the statuses, the registrable name, then
+  a **Whois** button and links to Google, VirusTotal, urlscan.io, Netify and crt.sh.
+* **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
+  CSV* saves it with the category column added.
+* **light and dark** — it follows the system theme and the button forces either one.
+
+### The domain categories
+
+The category is a guess from the domain name, computed in the page itself: nothing is sent
+anywhere. It is a hint for reading the table, not a verdict.
+
+| Category | What lands there |
+|---|---|
+| `ads` | ad exchanges and ad SDKs: doubleclick, applovin, moloco, vungle, criteo, `*.lgsmartad.com` … |
+| `acr` | automatic content recognition, the "what is on the screen" services of a smart TV: alphonso, samba.tv, inscape, gracenote |
+| `telemetry` | logs, metrics, beacons, crash and analytics endpoints: `logs.*`, `*.telemetry.*`, appsflyer, sentry, `unagi-*.amazon.com` |
+| `cdn` | cloudfront, akamai, fastly, cloudflare and the usual `cdn.*` names |
+| `streaming` | the media services themselves: netflix, amazonvideo, youtube, spotify, twitch |
+| `vendor` | the device maker: lgtvcommon, lgappstv, lgtvsdp, samsung, tizen, roku, apple, microsoft |
+| `update` | firmware and package endpoints: `update.*`, `ota.*`, `dl.*`, mirrors |
+| `other` | everything the rules do not recognise |
+
+Only `ads`, `acr` and `telemetry` carry a colour — they are the three you usually look for. The
+other categories keep a neutral dot: the name is always written next to it, so the colour is never
+the only way to tell them apart. The three hues pass the colour-blindness and contrast checks in
+both themes.
+
+### The Whois button
+
+It asks [rdap.org](https://rdap.org) for the **registrable** name (`eic.service.lgtvcommon.com` →
+`lgtvcommon.com`) and shows the registrar, the registration date with the age of the domain, the
+expiry and the name servers. RDAP is the successor of whois: it answers JSON and it sends
+`Access-Control-Allow-Origin: *`, so the page reads it with no API key and no proxy.
+
+The call happens **only when you press the button** — opening the report sends nothing. A young
+domain behind a privacy-proxy registrar is a useful signal next to a name you do not know.
+
+Some registries answer nothing useful to a browser (`.de` and `.it` among them). The panel then
+says so and gives you the link to open the answer yourself.
 
 ## Authentication
 

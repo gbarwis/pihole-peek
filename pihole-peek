@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -45,7 +45,7 @@ Options:
       --until TS       absolute end (default: now)
   -d, --domain REGEX   keep only the domains that match REGEX
   -n, --top N          keep only the first N rows
-  -f, --format FMT     count (default) | list | csv | json | raw
+  -f, --format FMT     count (default) | list | csv | json | html | raw
       --list-clients   list the clients known to the Pi-hole and exit
   -k, --insecure       accept a self-signed TLS certificate
       --totp CODE      two-factor code, if the Pi-hole asks for it
@@ -130,7 +130,7 @@ API="$URL/api"
 
 [[ "$HOURS" =~ ^[0-9]+$ ]] || die "--hours needs a whole number: $HOURS"
 [[ "$TOP"   =~ ^[0-9]+$ ]] || die "--top needs a whole number: $TOP"
-case "$FORMAT" in count|list|csv|json|raw) ;; *) die "unknown format: $FORMAT" ;; esac
+case "$FORMAT" in count|list|csv|json|html|raw) ;; *) die "unknown format: $FORMAT" ;; esac
 
 # --------------------------------------------------------------------------
 # HTTP helpers
@@ -242,7 +242,8 @@ if [[ "$FORMAT" == "raw" ]]; then
     exit 0
 fi
 
-BYCLIENT=true; [[ -n "$CLIENT" ]] && BYCLIENT=false
+BYCLIENT=true
+[[ -n "$CLIENT" && "$FORMAT" != "html" ]] && BYCLIENT=false
 
 GROUPED="$(jq -c --argjson want "$STATUS_JSON" \
               --argjson byclient "$BYCLIENT" \
@@ -255,6 +256,7 @@ GROUPED="$(jq -c --argjson want "$STATUS_JSON" \
             client: (if $byclient then .[0].client.ip else null end),
             hits:   length,
             status: (map(.status) | unique | join("|")),
+            first:  (map(.time) | min),
             last:   (map(.time) | max) } ]
     | sort_by(-.hits, .domain)' <<<"$RAW")"
 
@@ -265,6 +267,480 @@ if [[ "$ROWS" -eq 0 ]]; then
     printf '%s: no query matches the filters (%s)\n' "$PROG" "$WINDOW" >&2
     exit 2
 fi
+
+# --------------------------------------------------------------------------
+# html report: one self-contained file, no CDN, no network until you click
+# --------------------------------------------------------------------------
+html_report() {
+    cat <<'PEEK_HTML_HEAD'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pihole-peek report</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface:      #fcfcfb;
+  --card:         #ffffff;
+  --line:         #e4e3df;
+  --line-soft:    #efeeea;
+  --ink:          #0b0b0b;
+  --ink-2:        #52514e;
+  --ink-3:        #86847d;
+  --accent:       #2a78d6;
+  --cat-ads:      #eb6834;
+  --cat-tel:      #2a78d6;
+  --cat-acr:      #1baf7a;
+  --cat-none:     #86847d;
+  --bar:          #2a78d6;
+  --bar-track:    #efeeea;
+  --shadow:       0 1px 2px rgba(11,11,11,.06), 0 4px 16px rgba(11,11,11,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface:    #1a1a19;
+    --card:       #232322;
+    --line:       #35342f;
+    --line-soft:  #2b2b29;
+    --ink:        #ffffff;
+    --ink-2:      #c3c2b7;
+    --ink-3:      #8f8e85;
+    --accent:     #3987e5;
+    --cat-ads:    #d95926;
+    --cat-tel:    #3987e5;
+    --cat-acr:    #199e70;
+    --cat-none:   #8f8e85;
+    --bar:        #3987e5;
+    --bar-track:  #2b2b29;
+    --shadow:     0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface:    #1a1a19;
+  --card:       #232322;
+  --line:       #35342f;
+  --line-soft:  #2b2b29;
+  --ink:        #ffffff;
+  --ink-2:      #c3c2b7;
+  --ink-3:      #8f8e85;
+  --accent:     #3987e5;
+  --cat-ads:    #d95926;
+  --cat-tel:    #3987e5;
+  --cat-acr:    #199e70;
+  --cat-none:   #8f8e85;
+  --bar:        #3987e5;
+  --bar-track:  #2b2b29;
+  --shadow:     0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 28px 16px 64px; }
+
+header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px; }
+h1 span { color: var(--ink-3); font-weight: 400; }
+.meta { margin: 0; color: var(--ink-2); font-size: 12.5px; }
+.meta b { font-weight: 550; color: var(--ink); }
+.spacer { flex: 1 1 auto; }
+
+button, select, input {
+  font: inherit; color: inherit;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-3); }
+.ghost { background: transparent; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 13px 15px; box-shadow: var(--shadow); }
+.kpi .n { font-size: 25px; font-weight: 620; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.kpi .l { color: var(--ink-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.controls input[type=search] { flex: 1 1 220px; min-width: 160px; }
+.controls .count { color: var(--ink-3); font-size: 12.5px; margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 680px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--ink-3); white-space: nowrap; cursor: pointer; user-select: none;
+}
+thead th:hover { color: var(--ink); }
+thead th .arrow { opacity: 0; font-size: 10px; }
+thead th.sorted .arrow { opacity: 1; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--line-soft); }
+tbody tr.open { background: var(--line-soft); }
+td.dom { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; word-break: break-all; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.time, td.client { color: var(--ink-2); font-size: 12.5px; white-space: nowrap; }
+td.client { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; color: var(--ink-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cat-none); flex: none; }
+.dot.ads { background: var(--cat-ads); }
+.dot.telemetry { background: var(--cat-tel); }
+.dot.acr { background: var(--cat-acr); }
+
+.hits { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.bar { width: 74px; height: 6px; background: var(--bar-track); border-radius: 3px; overflow: hidden; flex: none; }
+.bar i { display: block; height: 100%; background: var(--bar); border-radius: 0 3px 3px 0; }
+
+tr.detail td { background: var(--surface); padding: 0; border-bottom: 1px solid var(--line); }
+.panel { padding: 14px 16px 16px; display: grid; gap: 12px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 26px; font-size: 12.5px; color: var(--ink-2); }
+.facts b { color: var(--ink); font-weight: 550; }
+.links { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.links a, .links button { font-size: 12.5px; padding: 5px 10px; border-radius: 7px; text-decoration: none; color: var(--ink-2); border: 1px solid var(--line); background: var(--card); }
+.links a:hover, .links button:hover { color: var(--ink); border-color: var(--ink-3); }
+.links .lbl { border: 0; background: none; color: var(--ink-3); padding-left: 0; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+.whois { font-size: 12.5px; color: var(--ink-2); border-left: 2px solid var(--line); padding-left: 12px; min-height: 0; }
+.whois b { color: var(--ink); font-weight: 550; }
+.whois .err { color: var(--ink-3); }
+
+footer { margin-top: 20px; color: var(--ink-3); font-size: 12px; }
+footer a { color: var(--ink-2); }
+.empty { padding: 40px 16px; text-align: center; color: var(--ink-3); }
+@media (max-width: 560px) { .wrap { padding: 18px 12px 48px; } h1 { font-size: 17px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>pihole-peek <span id="h-sub"></span></h1>
+    <p class="meta" id="h-meta"></p>
+  </div>
+  <div class="spacer"></div>
+  <button class="ghost" id="theme" title="Switch the theme">Theme</button>
+</header>
+
+<section class="kpis">
+  <div class="kpi"><div class="n" id="k-queries">0</div><div class="l">Queries</div></div>
+  <div class="kpi"><div class="n" id="k-domains">0</div><div class="l">Domains</div></div>
+  <div class="kpi"><div class="n" id="k-clients">0</div><div class="l">Clients</div></div>
+  <div class="kpi"><div class="n" id="k-top">-</div><div class="l">Main category</div></div>
+</section>
+
+<div class="controls">
+  <input type="search" id="q" placeholder="Filter the domains..." autocomplete="off">
+  <select id="f-client"></select>
+  <select id="f-cat"></select>
+  <select id="f-status"></select>
+  <button class="ghost" id="reset">Reset</button>
+  <button class="ghost" id="copy">Copy domains</button>
+  <button class="ghost" id="csv">Download CSV</button>
+  <span class="count" id="count"></span>
+</div>
+
+<div class="card">
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th data-k="domain">Domain <span class="arrow"></span></th>
+          <th data-k="category">Category <span class="arrow"></span></th>
+          <th data-k="client">Client <span class="arrow"></span></th>
+          <th data-k="hits" class="num" style="text-align:right">Hits <span class="arrow"></span></th>
+          <th data-k="last">Last seen <span class="arrow"></span></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="empty" id="empty" hidden>No domain matches the filters.</div>
+</div>
+
+<footer>
+  Generated by <a href="https://github.com/nightwatch75/pihole-peek">pihole-peek</a>
+  <span id="f-ver"></span>. The category is guessed locally from the domain name; Whois asks
+  <a href="https://rdap.org">rdap.org</a> only when you click it.
+</footer>
+
+</div>
+<script>
+PEEK_HTML_HEAD
+    printf 'const DATA = %s;\nconst META = %s;\n' "$GROUPED" "$META_JSON"
+    cat <<'PEEK_HTML_TAIL'
+</script>
+<script>
+"use strict";
+
+/* ---- category rules: first match wins; the label is always shown, the colour
+   is only a second encoding for the three groups that matter on a home network. */
+const RULES = [
+  ["ads", /(^|\.)(ads?|adserver|adservice|adsystem|advert(ising)?)[.-]|doubleclick|googleads|googlesyndication|googleadservices|admob|applovin|applvn|adcolony|unityads|vungle|moloco|inmobi|pubmatic|rubiconproject|criteo|taboola|outbrain|smaato|mopub|adsafeprotected|2mdn|adnxs|smartadserver|amazon-adsystem|smartad|adtech|adsrvr/i],
+  ["acr", /alphonso|samba\.tv|inscape|gracenote|vizbee|nielsen|(^|[.-])acr[.-]/i],
+  ["telemetry", /(^|[.-])(telemetry|metrics?|logs?|log|events?|ingest|collector?|diag(nostic)?s?|insights?|beacon|rum|stats?|report(ing)?|crash(es)?|analytics?|tracking|pixel)([.-]|$)|google-analytics|segment\.(io|com)|mixpanel|amplitude|appsflyer|adjust\.com|branch\.io|kochava|crashlytics|scorecardresearch|quantserve|chartbeat|hotjar|matomo|flurry|braze|onetrust|cookielaw|clarity\.ms|sentry|bugsnag|newrelic|datadoghq|unagi|customerevents|minerva/i],
+  ["cdn", /cloudfront|akamai|akamaized|edgekey|edgesuite|fastly|llnwd|cachefly|jsdelivr|cloudflare|(^|[.-])cdn[.-]|[.-]cdn\./i],
+  ["streaming", /netflix|nflx|youtube|googlevideo|primevideo|amazonvideo|hulu|disney|dazn|spotify|twitch|plex|ttvnw|deezer/i],
+  ["vendor", /lgtvcommon|lgappstv|lgwebos|lgtvsdp|lgsmart|lge\.com|samsungcloudsolution|samsungotn|samsungrm|samsungqbe|tizen|roku|vidaahub|whaleos|philips|vestel|sony|panasonic|xiaomi|miui|apple\.com|icloud|microsoft|windowsupdate/i],
+  ["update", /(^|[.-])(update|updates|ota|swupdate|firmware|download|dl|pkg|repo|mirrors?)([.-]|$)/i]
+];
+const CATS = ["ads", "acr", "telemetry", "cdn", "streaming", "vendor", "update", "other"];
+const COLOURED = { ads: 1, acr: 1, telemetry: 1 };
+
+function classify(d) {
+  for (const [name, re] of RULES) if (re.test(d)) return name;
+  return "other";
+}
+
+/* registrable name: what Whois and Netify want, e.g. eic.x.lgtvcommon.com -> lgtvcommon.com */
+const TWO_LEVEL = /\.(co|com|net|org|gov|edu|ac|or|ne|go)\.[a-z]{2}$/i;
+function registrable(d) {
+  const p = d.split(".");
+  if (p.length <= 2) return d;
+  return p.slice(TWO_LEVEL.test(d) ? -3 : -2).join(".");
+}
+
+const fmtN = n => n.toLocaleString();
+const fmtT = t => {
+  const d = new Date(t * 1000);
+  return d.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit",
+                                       hour: "2-digit", minute: "2-digit" });
+};
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---- state ---------------------------------------------------------- */
+DATA.forEach(r => { r.category = classify(r.domain); });
+let sortKey = "hits", sortDir = -1, openKey = null;
+
+const $ = id => document.getElementById(id);
+const rowKey = r => r.domain + "|" + (r.client || "");
+
+function view() {
+  const q = $("q").value.trim().toLowerCase();
+  const c = $("f-client").value, k = $("f-cat").value, st = $("f-status").value;
+  let rows = DATA.filter(r =>
+    (!q || r.domain.toLowerCase().includes(q)) &&
+    (!c || r.client === c) &&
+    (!k || r.category === k) &&
+    (!st || r.status.split("|").includes(st)));
+  const dir = sortDir;
+  rows.sort((a, b) => {
+    let x = a[sortKey], y = b[sortKey];
+    if (typeof x === "string") { const o = x.localeCompare(y); return o ? o * dir * -1 : 0; }
+    return (x - y) * dir;
+  });
+  return rows;
+}
+
+function render() {
+  const rows = view();
+  const tbody = $("rows");
+  const max = rows.reduce((m, r) => Math.max(m, r.hits), 0) || 1;
+  tbody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const key = rowKey(r);
+    tr.dataset.key = key;
+    if (key === openKey) tr.className = "open";
+    tr.innerHTML =
+      '<td class="dom">' + esc(r.domain) + '</td>' +
+      '<td><span class="chip"><span class="dot ' + (COLOURED[r.category] ? r.category : "") + '"></span>' + r.category + '</span></td>' +
+      '<td class="client">' + esc(r.client || "-") + '</td>' +
+      '<td class="num"><span class="hits"><span class="bar"><i style="width:' +
+        Math.max(2, Math.round(r.hits / max * 100)) + '%"></i></span>' + fmtN(r.hits) + '</span></td>' +
+      '<td class="time">' + fmtT(r.last) + '</td>';
+    tbody.appendChild(tr);
+    if (key === openKey) tbody.appendChild(detailRow(r));
+  }
+  $("empty").hidden = rows.length > 0;
+  $("count").textContent = fmtN(rows.length) + " of " + fmtN(DATA.length) + " rows · " +
+                           fmtN(rows.reduce((s, r) => s + r.hits, 0)) + " queries";
+  document.querySelectorAll("thead th").forEach(th => {
+    const on = th.dataset.k === sortKey;
+    th.classList.toggle("sorted", on);
+    th.querySelector(".arrow").textContent = on ? (sortDir === -1 ? "▼" : "▲") : "";
+  });
+}
+
+function detailRow(r) {
+  const tr = document.createElement("tr");
+  tr.className = "detail";
+  const td = document.createElement("td");
+  td.colSpan = 5;
+  const reg = registrable(r.domain), full = r.domain;
+  td.innerHTML =
+    '<div class="panel">' +
+      '<div class="facts">' +
+        '<span>first seen <b>' + fmtT(r.first) + '</b></span>' +
+        '<span>last seen <b>' + fmtT(r.last) + '</b></span>' +
+        '<span>queries <b>' + fmtN(r.hits) + '</b></span>' +
+        '<span>status <b>' + esc(r.status) + '</b></span>' +
+        '<span>registrable name <b>' + esc(reg) + '</b></span>' +
+      '</div>' +
+      '<div class="links">' +
+        '<span class="lbl">Look up</span>' +
+        '<button data-whois="' + esc(reg) + '">Whois</button>' +
+        '<a target="_blank" rel="noreferrer noopener" href="https://www.google.com/search?q=' + encodeURIComponent('"' + full + '"') + '">Google</a>' +
+        '<a target="_blank" rel="noreferrer noopener" href="https://www.virustotal.com/gui/domain/' + encodeURIComponent(full) + '">VirusTotal</a>' +
+        '<a target="_blank" rel="noreferrer noopener" href="https://urlscan.io/domain/' + encodeURIComponent(full) + '">urlscan.io</a>' +
+        '<a target="_blank" rel="noreferrer noopener" href="https://www.netify.ai/resources/domains/' + encodeURIComponent(reg) + '">Netify</a>' +
+        '<a target="_blank" rel="noreferrer noopener" href="https://crt.sh/?q=' + encodeURIComponent("%." + reg) + '">crt.sh</a>' +
+      '</div>' +
+      '<div class="whois" hidden></div>' +
+    '</div>';
+  tr.appendChild(td);
+  return tr;
+}
+
+/* ---- Whois over RDAP: no key, no proxy, only when the button is pressed ---- */
+async function whois(btn, name, box) {
+  box.hidden = false;
+  box.innerHTML = "asking rdap.org about <b>" + esc(name) + "</b>...";
+  btn.disabled = true;
+  try {
+    const res = await fetch("https://rdap.org/domain/" + encodeURIComponent(name),
+                            { headers: { accept: "application/rdap+json" } });
+    if (res.status === 404) { box.innerHTML = '<span class="err">' + esc(name) + ' is not in any RDAP registry.</span>'; return; }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const j = await res.json();
+    const ev = {};
+    (j.events || []).forEach(e => { ev[e.eventAction] = e.eventDate; });
+    const rg = (j.entities || []).find(e => (e.roles || []).includes("registrar"));
+    let rgName = "unknown";
+    if (rg && Array.isArray(rg.vcardArray)) {
+      const fn = rg.vcardArray[1].find(v => v[0] === "fn");
+      if (fn) rgName = fn[3];
+    }
+    const day = d => d ? String(d).slice(0, 10) : "unknown";
+    const ns = (j.nameservers || []).map(n => n.ldhName.toLowerCase());
+    let age = "";
+    if (ev.registration) {
+      const years = (Date.now() - Date.parse(ev.registration)) / 31557600000;
+      age = " (" + (years < 1 ? Math.round(years * 12) + " months" : years.toFixed(1) + " years") + " old)";
+    }
+    box.innerHTML =
+      "registrar <b>" + esc(rgName) + "</b> · registered <b>" + day(ev.registration) + "</b>" + esc(age) +
+      " · expires <b>" + day(ev.expiration) + "</b>" +
+      (ev["last changed"] ? " · last change <b>" + day(ev["last changed"]) + "</b>" : "") +
+      (ns.length ? "<br>name servers " + esc(ns.slice(0, 4).join(", ")) : "");
+  } catch (e) {
+    box.innerHTML = '<span class="err">RDAP did not answer (' + esc(e.message) +
+      '). Some registries block the browser: <a target="_blank" rel="noreferrer noopener" href="https://rdap.org/domain/' +
+      encodeURIComponent(name) + '">open the answer directly</a>.</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ---- wiring --------------------------------------------------------- */
+function fill(sel, label, values) {
+  const el = $(sel);
+  el.innerHTML = '<option value="">' + label + '</option>' +
+    values.map(v => '<option value="' + esc(v) + '">' + esc(v) + "</option>").join("");
+}
+
+function init() {
+  $("h-sub").textContent = META.client ? "· " + META.client : "· all clients";
+  $("h-meta").innerHTML =
+    "<b>" + esc(META.host) + "</b> · " + esc(META.window) + " · status <b>" + esc(META.status) + "</b>" +
+    (META.domain ? " · domain filter <b>" + esc(META.domain) + "</b>" : "") +
+    " · generated " + esc(META.generated);
+  $("f-ver").textContent = META.version;
+
+  const clients = [...new Set(DATA.map(r => r.client).filter(Boolean))].sort();
+  const cats = CATS.filter(c => DATA.some(r => r.category === c));
+  const stats = [...new Set(DATA.flatMap(r => r.status.split("|")))].sort();
+  fill("f-client", "All clients (" + clients.length + ")", clients);
+  fill("f-cat", "All categories", cats);
+  fill("f-status", "All statuses", stats);
+
+  $("k-queries").textContent = fmtN(DATA.reduce((s, r) => s + r.hits, 0));
+  $("k-domains").textContent = fmtN(new Set(DATA.map(r => r.domain)).size);
+  $("k-clients").textContent = fmtN(clients.length);
+  const byCat = {};
+  DATA.forEach(r => { byCat[r.category] = (byCat[r.category] || 0) + r.hits; });
+  const top = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0];
+  $("k-top").textContent = top ? top[0] : "-";
+
+  ["q", "f-client", "f-cat", "f-status"].forEach(id =>
+    $(id).addEventListener("input", () => { openKey = null; render(); }));
+  $("reset").addEventListener("click", () => {
+    $("q").value = ""; $("f-client").value = ""; $("f-cat").value = ""; $("f-status").value = "";
+    openKey = null; render();
+  });
+  $("copy").addEventListener("click", e => {
+    const list = [...new Set(view().map(r => r.domain))].sort().join("\n");
+    navigator.clipboard.writeText(list).then(() => {
+      e.target.textContent = "Copied";
+      setTimeout(() => { e.target.textContent = "Copy domains"; }, 1200);
+    });
+  });
+  $("csv").addEventListener("click", () => {
+    const q = s => '"' + String(s).replace(/"/g, '""') + '"';
+    const body = view().map(r => [r.domain, r.category, r.client || "", r.hits, r.status,
+                                  new Date(r.last * 1000).toISOString()].map(q).join(","));
+    const blob = new Blob(["domain,category,client,hits,status,last_seen\n" + body.join("\n") + "\n"],
+                          { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "pihole-peek.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  document.querySelectorAll("thead th").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if (k === sortKey) sortDir = -sortDir;
+    else { sortKey = k; sortDir = (k === "hits" || k === "last") ? -1 : 1; }
+    openKey = null; render();
+  }));
+
+  $("rows").addEventListener("click", ev => {
+    const btn = ev.target.closest("button[data-whois]");
+    if (btn) {
+      whois(btn, btn.dataset.whois, btn.closest(".panel").querySelector(".whois"));
+      return;
+    }
+    if (ev.target.closest("a") || ev.target.closest(".detail")) return;
+    const tr = ev.target.closest("tr[data-key]");
+    if (!tr) return;
+    openKey = (openKey === tr.dataset.key) ? null : tr.dataset.key;
+    render();
+  });
+
+  const saved = localStorage.getItem("pihole-peek-theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+  $("theme").addEventListener("click", () => {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    const cur = document.documentElement.dataset.theme || (dark ? "dark" : "light");
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("pihole-peek-theme", next); } catch (e) {}
+  });
+
+  render();
+}
+init();
+</script>
+</body>
+</html>
+PEEK_HTML_TAIL
+}
 
 # --------------------------------------------------------------------------
 # output
@@ -287,6 +763,13 @@ case "$FORMAT" in
         echo "domain,hits,status,last_seen"
         jq -r '.[] | [.domain, .hits, .status, (.last|todate)] | @csv' <<<"$GROUPED"
     fi
+    ;;
+  html)
+    META_JSON="$(jq -nc --arg host "$URL" --arg window "$WINDOW" --arg status "$STATUS" \
+                        --arg client "$CLIENT" --arg domain "$DOMAIN_RE" \
+                        --arg generated "$(date '+%Y-%m-%d %H:%M')" \
+                        --arg version "$VERSION" '$ARGS.named')"
+    html_report
     ;;
   count)
     if [[ "$BYCLIENT" == "true" ]]; then
