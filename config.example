@@ -16,7 +16,7 @@ PIHOLE_URL="http://pihole.example.lan"
 #PIHOLE_PASSWORD="change-me"
 
 # Defaults for --status, --hours and --format.
-#PIHOLE_STATUS="blocked"
+#PIHOLE_STATUS="all"
 #PIHOLE_HOURS="24"
 #PIHOLE_FORMAT="count"
 

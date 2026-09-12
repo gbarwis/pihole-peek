@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -39,7 +39,7 @@ Options:
                        environment sets a default client
   -A, --alias NAME     friendly name of the client, written next to its address
                        in the html report (needs --client)
-  -s, --status SET     blocked (default) | allowed | cached | all,
+  -s, --status SET     all (default) | blocked | allowed | cached,
                        or a comma separated list of FTL statuses
                        (e.g. GRAVITY,DENYLIST)
   -t, --hours N        time window, hours back from now (default: 24)
@@ -92,7 +92,7 @@ URL="${PIHOLE_URL:-}"
 CLIENT="${PIHOLE_CLIENT:-}"
 ALIAS="${PIHOLE_ALIAS:-}"
 PASSWORD="${PIHOLE_PASSWORD:-}"
-STATUS="${PIHOLE_STATUS:-blocked}"
+STATUS="${PIHOLE_STATUS:-all}"
 HOURS="${PIHOLE_HOURS:-24}"
 FORMAT="${PIHOLE_FORMAT:-count}"
 INSECURE="${PIHOLE_INSECURE:-0}"

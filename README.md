@@ -71,16 +71,16 @@ If the config file sets a default client, `--all-clients` puts the report back o
 ```sh
 pihole-peek --list-clients                       # which clients does the Pi-hole see?
 
-pihole-peek -c 192.0.2.70                        # blocked domains of one client, last 24 h
-pihole-peek -c 192.0.2.70 -s allowed             # what it resolved instead
-pihole-peek -c 192.0.2.70 -s all -t 6            # everything, last 6 hours
-pihole-peek -c tv.lan -f list > tv-domains.txt   # one domain per line
+pihole-peek -c 192.0.2.70                        # every query of one client, last 24 h
+pihole-peek -c 192.0.2.70 -s blocked             # only what the Pi-hole stopped
+pihole-peek -c 192.0.2.70 -s allowed -t 6        # only what went out, last 6 hours
+pihole-peek -c tv.lan -s blocked -f list > tv-domains.txt   # one domain per line
 
-pihole-peek                                      # every client, blocked, with a CLIENT column
+pihole-peek                                      # every client, with a CLIENT column
 pihole-peek -n 20 -f csv > report.csv            # top 20 rows as CSV
-pihole-peek -d 'doubleclick|googleads' -s all    # only the domains that match a regex
+pihole-peek -d 'doubleclick|googleads'           # only the domains that match a regex
 
-pihole-peek -s all -f html > report.html          # interactive report, open it in a browser
+pihole-peek -f html > report.html                # interactive report, open it in a browser
 pihole-peek -c 192.0.2.70 -A "living room TV" -f html > tv.html
 
 pihole-peek --since '2026-09-12 00:00' --until '2026-09-12 08:00'
@@ -96,7 +96,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-c`, `--client ADDR` | `PIHOLE_CLIENT` | every client | client IP or hostname |
 | `-a`, `--all-clients` | — | — | report every client, even when a default client is configured |
 | `-A`, `--alias NAME` | `PIHOLE_ALIAS` | — | friendly name of the client, written next to its address in the HTML report. It needs a client, so `--all-clients` clears it. |
-| `-s`, `--status SET` | `PIHOLE_STATUS` | `blocked` | which queries to export — see the table below |
+| `-s`, `--status SET` | `PIHOLE_STATUS` | `all` | which queries to export — see the table below |
 | `-t`, `--hours N` | `PIHOLE_HOURS` | `24` | time window, hours back from now |
 | `--since TS` | — | — | absolute start, in any format GNU `date -d` reads |
 | `--until TS` | — | now | absolute end |
@@ -111,14 +111,15 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 
 ## What to export: the status sets
 
-`--status` takes a **group name** or a **comma separated list of FTL statuses**.
+Without `--status` the export holds **every** query of the window. Narrow it with a **group name**
+or a **comma separated list of FTL statuses**.
 
 | Value | Statuses it covers | Use it for |
 |---|---|---|
-| `blocked` *(default)* | `GRAVITY`, `GRAVITY_CNAME`, `DENYLIST`, `DENYLIST_CNAME`, `REGEX`, `REGEX_CNAME`, `EXTERNAL_BLOCKED_IP`, `EXTERNAL_BLOCKED_NULL`, `EXTERNAL_BLOCKED_NXRA`, `EXTERNAL_BLOCKED_EDE15`, `SPECIAL_DOMAIN` | what the Pi-hole stopped |
+| `blocked` | `GRAVITY`, `GRAVITY_CNAME`, `DENYLIST`, `DENYLIST_CNAME`, `REGEX`, `REGEX_CNAME`, `EXTERNAL_BLOCKED_IP`, `EXTERNAL_BLOCKED_NULL`, `EXTERNAL_BLOCKED_NXRA`, `EXTERNAL_BLOCKED_EDE15`, `SPECIAL_DOMAIN` | what the Pi-hole stopped |
 | `allowed` | `FORWARDED`, `RETRIED`, `RETRIED_DNSSEC` | what really went out to the upstream resolver |
 | `cached` | `CACHE`, `CACHE_STALE` | what was answered from the cache |
-| `all` | every status | the full picture, blocked and allowed together |
+| `all` *(default)* | every status | the full picture, blocked and allowed together |
 | a list | e.g. `GRAVITY,DENYLIST` or `FORWARDED` | one exact status, or your own mix |
 
 `GRAVITY` means a blocklist stopped it, `DENYLIST` an exact rule of yours, `REGEX` one of your
@@ -164,7 +165,7 @@ domain,hits,status,last_seen
 **`html`** — a single self-contained file to open in a browser. See the next section.
 
 ```sh
-pihole-peek -s all -f html > report.html && xdg-open report.html
+pihole-peek -f html > report.html && xdg-open report.html
 ```
 
 **`raw`** — the API answer with no processing, for your own `jq`. Every field is there: query type,
@@ -267,7 +268,7 @@ is the `earliest_timestamp_disk` field of a `--format raw` answer.
 | `1` | error — bad option, no address, no connection, authentication refused |
 | `2` | no query matches the filters |
 
-So a cron job can tell "nothing was blocked" from "the Pi-hole is down".
+So a cron job can tell "nothing matched" from "the Pi-hole is down".
 
 ## License
 
