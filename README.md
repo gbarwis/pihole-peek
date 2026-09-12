@@ -22,7 +22,7 @@ Pi-hole v6 only. Version 5 used `admin/api.php` with an auth token, which this t
 
 ## Requirements
 
-`bash` 4.2 or later, `curl`, `jq`, and the GNU `date` command.
+`bash` 4.2 or later, `curl`, `jq` 1.6 or later (it uses `$ARGS.named`), and the GNU `date` command.
 
 ## Install
 
@@ -32,7 +32,8 @@ cd pihole-peek
 ln -s "$PWD/pihole-peek" ~/.local/bin/pihole-peek     # any directory in your PATH
 ```
 
-The script follows its own symlink, so the config file next to the real script is always found.
+The script follows its own symlink, so the `config` and `categories` files next to the real script
+are always found.
 
 ## Configuration
 
@@ -57,7 +58,7 @@ PIHOLE_URL="http://pihole.example.lan"
 #PIHOLE_CLIENT="192.0.2.70"
 #PIHOLE_ALIAS="living room TV"
 #PIHOLE_PASSWORD="change-me"
-#PIHOLE_STATUS="blocked"
+#PIHOLE_STATUS="all"
 #PIHOLE_HOURS="24"
 #PIHOLE_FORMAT="count"
 #PIHOLE_INSECURE="0"
@@ -184,13 +185,15 @@ What the page gives you:
 
 * **live filters** — free text on the domain, plus a drop-down for client, category and FTL status.
   The counter and the bar scale follow the selection.
-* **sortable columns** — click a header to sort by domain, category, client, hits or last seen;
-  click again to turn the order around.
+* **sortable columns** — click a header to sort by domain, status, category, client, hits or last
+  seen; click again to turn the order around.
 * **a state for every row** — a coloured square and the wording that says what happened to that
   domain, so a full export stays readable; see the table below.
-* **a category for every domain** — guessed locally from the name, see the table below.
-* **a look-up panel** — click a row: first seen, last seen, the statuses, the registrable name, then
-  a **Whois** button and links to Google, VirusTotal, urlscan.io, Netify and crt.sh.
+* **a category for every domain** — matched locally against the rules in the `categories` file,
+  see the table below.
+* **a look-up panel** — click a row: first seen, last seen, the statuses, the registrable name, the
+  category with the rule that chose it, then a **Whois** button and links to Google, VirusTotal,
+  urlscan.io, Netify and crt.sh.
 * **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
   CSV* saves it with the state, the readable status and the category added.
 * **a legend at the foot of the page** — every FTL status with the sentence that explains it, every
