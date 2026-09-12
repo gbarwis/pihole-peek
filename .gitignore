@@ -1,8 +1,8 @@
 # local configuration: it holds your own address and password
 config
 
-# local category rules
-categories
+# your own category rules; the shipped 'categories' file is tracked
+categories.local
 
 # Claude Code guidance and local session data
 CLAUDE.md

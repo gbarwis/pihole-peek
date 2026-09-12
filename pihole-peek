@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="2.0.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -48,8 +48,9 @@ Options:
   -d, --domain REGEX   keep only the domains that match REGEX
   -n, --top N          keep only the first N rows
   -f, --format FMT     count (default) | list | csv | json | html | raw
-      --categories F   extra category rules for the html report (default: a file
-                       named 'categories' next to this script, when it exists)
+      --categories F   category rules for the html report (default: a file named
+                       'categories' next to this script; the rules in F.local,
+                       when it exists, are tried first and win)
       --list-clients   list the clients known to the Pi-hole and exit
   -k, --insecure       accept a self-signed TLS certificate
       --totp CODE      two-factor code, if the Pi-hole asks for it
@@ -282,18 +283,37 @@ if [[ "$ROWS" -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# extra category rules: "<category> <regex>" per line, '#' starts a comment.
-# They are tried before the built-in rules, so they win.
+# category rules. The script holds no taxonomy of its own: everything comes
+# from the rules file, plus an optional "<file>.local" whose rules win.
+#   <category> <regex>                classify a domain, first match wins
+#   @color <category> <light> [dark]  the colour of its dot
+#   @about <category> <text>          the sentence in the legend
+# A line whose first non-blank character is '#' is a comment; '#' anywhere else
+# belongs to the value, so a regex or a colour can hold one.
 # --------------------------------------------------------------------------
-user_rules_json() {
-    local file="${CATEGORIES:-$SELF_DIR/categories}"
-    [[ -r "$file" ]] || { printf '[]'; return; }
-    sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$file" \
-    | jq -Rsc 'split("\n")
-               | map(select(length > 0)
-                     | sub("^[[:space:]]+"; "")
-                     | [ (capture("^(?<c>[^[:space:]]+)[[:space:]]+(?<r>.+)$") | .c, .r) ]
-                     | select(length == 2))'
+rules_payload() {
+    local base="${CATEGORIES:-$SELF_DIR/categories}"
+    local files=() f
+    [[ -r "$base.local" ]] && files+=("$base.local")
+    [[ -r "$base" ]] && files+=("$base")
+    if [[ ${#files[@]} -eq 0 ]]; then
+        printf '{"colours":{},"about":{},"rules":[]}'
+        return
+    fi
+    cat "${files[@]}" \
+    | sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' \
+    | jq -Rsc '
+        [ split("\n")[] | select(length > 0) | sub("^[[:space:]]+"; "") ] as $l
+        | { colours: ( [ $l[]
+                         | capture("^@color[[:space:]]+(?<c>[^[:space:]]+)[[:space:]]+(?<a>#[0-9A-Fa-f]{3,8})([[:space:]]+(?<b>#[0-9A-Fa-f]{3,8}))?$")
+                         | { key: .c, value: [ .a, (.b // .a) ] } ] | from_entries ),
+            about:   ( [ $l[]
+                         | capture("^@about[[:space:]]+(?<c>[^[:space:]]+)[[:space:]]+(?<t>.+)$")
+                         | { key: .c, value: .t } ] | from_entries ),
+            rules:   [ $l[]
+                       | select(startswith("@") | not)
+                       | capture("^(?<c>[^[:space:]]+)[[:space:]]+(?<r>.+)$")
+                       | [ .c, .r ] ] }'
 }
 
 # --------------------------------------------------------------------------
@@ -448,9 +468,6 @@ td.client { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospac
 .sw.mixed { background: var(--st-mixed); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
        background: var(--cat-none); flex: none; }
-.dot.ads { background: var(--cat-ads); }
-.dot.tel { background: var(--cat-tel); }
-.dot.acr { background: var(--cat-acr); }
 
 .hits { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
 .bar { width: 74px; height: 6px; background: var(--bar-track); border-radius: 3px; overflow: hidden; flex: none; }
@@ -510,7 +527,7 @@ footer a { color: var(--ink-2); }
   <div class="kpi"><div class="n" id="k-domains">0</div><div class="l">Domains</div></div>
   <div class="kpi"><div class="n" id="k-clients">0</div><div class="l">Clients</div></div>
   <div class="kpi"><div class="n" id="k-blocked">-</div><div class="l">Blocked</div></div>
-  <div class="kpi"><div class="n" id="k-top">-</div><div class="l">Main category</div></div>
+  <div class="kpi" id="kpi-cat"><div class="n" id="k-top">-</div><div class="l">Main category</div></div>
 </section>
 
 <div class="controls">
@@ -567,8 +584,8 @@ footer a { color: var(--ink-2); }
 </div>
 <script>
 PEEK_HTML_HEAD
-    printf 'const DATA = %s;\nconst META = %s;\nconst USER_RULES = %s;\n' \
-           "$GROUPED" "$META_JSON" "$(user_rules_json)"
+    printf 'const DATA = %s;\nconst META = %s;\nconst TAXONOMY = %s;\n' \
+           "$GROUPED" "$META_JSON" "$(rules_payload)"
     cat <<'PEEK_HTML_TAIL'
 </script>
 <script>
@@ -576,60 +593,34 @@ PEEK_HTML_HEAD
 
 /* ---- category rules: first match wins; the label is always shown, the colour
    is only a second encoding for the three groups that matter on a home network. */
-/* Category rules: [name, what it covers, regex]. The first match wins, so the
-   order is the specification. Rules from the categories file are tried first. */
-const RULES = [
-  ["ads", "ad exchanges and ad SDKs",
-   /(^|\.)(ads?|adserver|adservice|adsystem|advert(ising)?)[.-]|doubleclick|googleads|googlesyndication|googleadservices|admob|applovin|applvn|adcolony|unityads|vungle|moloco|inmobi|pubmatic|rubiconproject|criteo|taboola|outbrain|smaato|mopub|adsafeprotected|2mdn|adnxs|smartadserver|amazon-adsystem|smartad|adtech|adsrvr|teads|sharethrough|openx|indexexchange/i],
-  ["acr", "automatic content recognition: what is on the screen",
-   /alphonso|samba\.tv|inscape|gracenote|vizbee|nielsen|(^|[.-])acr[.-]/i],
-  ["tracking", "third-party analytics, attribution and monitoring",
-   /google-?analytics|googletagmanager|segment\.(io|com)|mixpanel|amplitude|appsflyer|adjust\.com|branch\.io|kochava|singular\.net|scorecardresearch|quantserve|chartbeat|hotjar|matomo|statcounter|flurry|braze|onetrust|cookielaw|clarity\.ms|fullstory|heap(analytics)?\.io|optimizely|mparticle|tealium|adobedtm|omtrdc|demdex|krxd|bluekai|liveramp|newrelic|datadoghq|sentry\.io|bugsnag|crashlytics/i],
-  ["telemetry", "logs, metrics, beacons and crash reports of the device itself",
-   /(^|[.-])(telemetry|metrics?|logs?|log|events?|ingest|collector?|diag(nostic)?s?|insights?|beacon|rum|stats?|report(ing)?|crash(es)?|pixel)([.-]|$)|unagi|customerevents|minerva/i],
-  ["connectivity", "captive portal and “am I online” checks",
-   /connectivitycheck|connecttest|detectportal|captive|nmcheck|clients[0-9]\.google\.com|networkcheck/i],
-  ["pki", "certificate validation: OCSP, CRL, timestamping",
-   /(^|[.-])(ocsp|crl|pki|crt|aia)[.-]|digicert|letsencrypt|sectigo|globalsign|godaddy\.com\/repository|entrust\.net/i],
-  ["ntp", "clock synchronisation",
-   /(^|[.-])(ntp|time)([.-]|$)|pool\.ntp\.org|time\.(windows|apple|google|cloudflare)\.com/i],
-  ["dns", "public resolvers, DNS over HTTPS and DNS services",
-   /(^|[.-])(dns|doh|resolver)[.-]|dns\.google|one\.one\.one\.one|quad9|nextdns|adguard-dns|opendns|dnscrypt/i],
-  ["update", "firmware, packages and mirrors",
-   /(^|[.-])(update|updates|ota|swupdate|firmware|download|dl|pkg|repo|mirrors?)([.-]|$)|archlinux|debian\.org|ubuntu\.com|fedoraproject|windowsupdate|gvt1\.com/i],
-  ["smarthome", "connected devices and home automation",
-   /meethue|(^|[.-])hue[.-]|tuya|shelly|sonos|tplinkcloud|kasa(smart)?|ring\.com|nest\.com|ecobee|home-?assistant|smartthings|aqara|govee|wyze|tado|netatmo|ifttt|miio|mi(jia|home)/i],
-  ["gaming", "game platforms and stores",
-   /steam(powered|static|community)|playstation|xboxlive|xbox\.com|nintendo|epicgames|ubisoft|battle\.net|roblox|minecraft|riotgames|ea\.com/i],
-  ["social", "social networks and messaging",
-   /facebook|fbcdn|instagram|whatsapp|tiktok|bytedance|musical\.ly|twitter|snapchat|linkedin|pinterest|reddit|discord|telegram|mastodon/i],
-  ["ai", "assistants and language models",
-   /openai|anthropic|claude\.ai|gemini\.google|bard\.google|copilot|perplexity|huggingface|alexa|siri|assistant\.google|voice-?service/i],
-  ["shopping", "shops and marketplaces",
-   /(^|\.)amazon\.[a-z]{2,3}(\.[a-z]{2})?$|ebay|aliexpress|alibaba|shopify|zalando|etsy|temu|shein|wish\.com/i],
-  ["streaming", "the media services themselves",
-   /netflix|nflx|youtube|googlevideo|primevideo|amazonvideo|hulu|disney|dazn|spotify|twitch|plex|ttvnw|deezer|tidal|iplayer|pluto\.tv|rakuten\.tv|raiplay|mediaset|skyshowtime/i],
-  ["vendor", "services of the device maker",
-   /lgtvcommon|lgappstv|lgwebos|lgtvsdp|lgsmart|lge\.com|samsungcloudsolution|samsungotn|samsungrm|samsungqbe|tizen|roku|vidaahub|whaleos|philips|vestel|hisense|(^|[.-])tcl[.-]|sony|panasonic|xiaomi|apple\.com|icloud|microsoft|windows\.com|android\.com/i],
-  ["cdn", "content delivery networks",
-   /cloudfront|akamai|akamaized|edgekey|edgesuite|fastly|llnwd|cachefly|jsdelivr|unpkg|cloudflare|bunnycdn|stackpath|ssl-images-amazon|media-amazon|ytimg|gvt[0-9]|(^|[.-])cdn[.-]|[.-]cdn\./i],
-  ["cloud", "generic cloud, hosting and platform APIs",
-   /amazonaws|a2z\.com|azure|windows\.net|googleapis|gstatic|appspot|herokuapp|digitalocean|linode|vultr|hetzner|\.ovh\b/i]
-];
+/* The taxonomy is data, not code: rules, colours and wording all come from the
+   categories file. With no file the report simply drops the category column. */
+const RULE_ERRORS = [];
+const RULES = (TAXONOMY.rules || []).map(([name, src]) => {
+  try { return [name, new RegExp(src, "i"), src]; }
+  catch (e) { RULE_ERRORS.push(name + " " + src + " — " + e.message); return null; }
+}).filter(Boolean);
+const ABOUT = TAXONOMY.about || {};
+const COLOURS = TAXONOMY.colours || {};
+const HAS_CATS = RULES.length > 0;
+const CATS = [...new Set([...RULES.map(r => r[0]), "other"])];
 
-/* Two categories share the blue: both mean "data about this device leaves the
-   network". Three hues is what the colour-blind and contrast checks clear, so
-   every other category keeps a neutral dot and relies on its written name. */
-const CAT_COLOUR = { ads: "ads", acr: "acr", telemetry: "tel", tracking: "tel" };
-
-const USER_RULE_ERRORS = [];
-const COMPILED_USER = (typeof USER_RULES === "undefined" ? [] : USER_RULES)
-  .map(([name, src]) => {
-    try { return [name, new RegExp(src, "i"), src]; }
-    catch (e) { USER_RULE_ERRORS.push(name + " " + src + " — " + e.message); return null; }
-  }).filter(Boolean);
-
-const CATS = [...new Set([...COMPILED_USER.map(r => r[0]), ...RULES.map(r => r[0]), "other"])];
+/* one <style> for the category dots, so a colour in the file reaches both themes */
+function paintCategories() {
+  const safe = /^[A-Za-z0-9_-]+$/, hex = /^#[0-9A-Fa-f]{3,8}$/;
+  const css = Object.keys(COLOURS).map(c => {
+    const [light, dark] = COLOURS[c];
+    if (!safe.test(c) || !hex.test(light) || !hex.test(dark)) return "";
+    const sel = '.dot[data-c="' + c + '"]';
+    return sel + "{background:" + light + "}" +
+      '@media (prefers-color-scheme: dark){:root:not([data-theme="light"])' + sel + "{background:" + dark + "}}" +
+      ':root[data-theme="dark"]' + sel + "{background:" + dark + "}";
+  }).join("");
+  if (!css) return;
+  const el = document.createElement("style");
+  el.textContent = css;
+  document.head.appendChild(el);
+}
 
 /* what every FTL status means, and which state it belongs to. The swatch is a
    second encoding only: the wording next to it always says what happened. */
@@ -690,9 +681,8 @@ function statusOf(raw) {
 
 
 function classify(d) {
-  for (const [name, re, src] of COMPILED_USER) if (re.test(d)) return [name, "your rule: /" + src + "/"];
-  for (const [name, , re] of RULES) if (re.test(d)) return [name, "built-in rule: /" + re.source + "/"];
-  return ["other", "no rule matched"];
+  for (const [name, re, src] of RULES) if (re.test(d)) return [name, "rule: /" + src + "/"];
+  return ["other", "no rule matched this domain"];
 }
 
 /* registrable name: what Whois and Netify want, e.g. eic.x.lgtvcommon.com -> lgtvcommon.com */
@@ -753,8 +743,8 @@ function render() {
       '<td class="dom">' + esc(r.domain) + '</td>' +
       '<td><span class="st" title="' + esc(r.status) + '"><span class="sw ' + r.kind + '"></span>' +
         esc(r.statusLabel) + '</span></td>' +
-      '<td><span class="chip" title="' + esc(r.rule) + '"><span class="dot ' +
-        (CAT_COLOUR[r.category] || "") + '"></span>' + esc(r.category) + '</span></td>' +
+      (HAS_CATS ? '<td><span class="chip" title="' + esc(r.rule) + '"><span class="dot" data-c="' +
+        esc(r.category) + '"></span>' + esc(r.category) + "</span></td>" : "") +
       '<td class="client">' + esc(r.client || "-") + '</td>' +
       '<td class="num"><span class="hits"><span class="bar"><i style="width:' +
         Math.max(2, Math.round(r.hits / max * 100)) + '%"></i></span>' + fmtN(r.hits) + '</span></td>' +
@@ -776,7 +766,7 @@ function detailRow(r) {
   const tr = document.createElement("tr");
   tr.className = "detail";
   const td = document.createElement("td");
-  td.colSpan = 6;
+  td.colSpan = HAS_CATS ? 6 : 5;
   const reg = registrable(r.domain), full = r.domain;
   td.innerHTML =
     '<div class="panel">' +
@@ -786,7 +776,7 @@ function detailRow(r) {
         '<span>queries <b>' + fmtN(r.hits) + '</b></span>' +
         '<span>status <b>' + esc(r.status) + '</b></span>' +
         '<span>registrable name <b>' + esc(reg) + '</b></span>' +
-        '<span>category <b>' + esc(r.category) + '</b> \u2014 ' + esc(r.rule) + '</span>' +
+        (HAS_CATS ? '<span>category <b>' + esc(r.category) + "</b> \u2014 " + esc(r.rule) + "</span>" : "") +
       '</div>' +
       '<div class="links">' +
         '<span class="lbl">Look up</span>' +
@@ -961,6 +951,13 @@ function init() {
   });
   paintTheme();
 
+  paintCategories();
+  if (!HAS_CATS) {
+    $("f-cat").hidden = true;
+    $("kpi-cat").hidden = true;
+    document.querySelector('thead th[data-k="category"]').remove();
+    document.querySelector("#lg-cats").closest("div").hidden = true;
+  }
   legend();
   render();
 }
@@ -986,25 +983,29 @@ function legend() {
     '<td class="n">\u2013</td></tr>';
 
   const seen = new Set(DATA.map(r => r.category));
-  const known = RULES.map(([name, what]) => [name, what]);
-  COMPILED_USER.forEach(([name]) => { if (!known.some(k => k[0] === name)) known.push([name, "your own rule"]); });
-  known.push(["other", "no rule matched this domain"]);
-  $("lg-cats").innerHTML = known.map(([name, what]) => {
+  const known = [...new Set([...RULES.map(r => r[0]), ...Object.keys(ABOUT), "other"])];
+  $("lg-cats").innerHTML = known.map(name => {
+    const what = ABOUT[name] || "a rule of your own";
     const n = catHits[name] || 0;
     return '<tr class="' + (seen.has(name) ? "" : "off") + '">' +
-      '<td class="c"><span class="dot ' + (CAT_COLOUR[name] || "") + '"></span></td>' +
+      '<td class="c"><span class="dot" data-c="' + esc(name) + '"></span></td>' +
       '<td class="k">' + esc(name) + "</td><td>" + esc(what) + "</td>" +
       '<td class="n">' + (n ? fmtN(n) : "\u2013") + "</td></tr>";
   }).join("");
 
   $("lg-note").innerHTML =
-    "A grey row is a value this export does not contain. The status colour says what happened, the " +
-    "category colour says what the domain is: both always carry their name in writing, so neither " +
-    "leans on colour alone. Hovering a category shows the rule that chose it." +
-    "<br>Add your own categories in <code>" + esc(META.categories || "categories") + "</code>, one " +
-    "rule per line, <code>&lt;category&gt; &lt;regex&gt;</code>. Your rules are tried first, so they win." +
-    (USER_RULE_ERRORS.length
-      ? '<br><span class="warn">Rules that did not compile: ' + esc(USER_RULE_ERRORS.join("; ")) + "</span>"
+    "A grey row is a value this export does not contain. Status colours are fixed and say what " +
+    "happened; category colours come from the rules file and say what the domain is. Both always " +
+    "carry their name in writing, so neither leans on colour alone, and hovering a category shows " +
+    "the rule that chose it." +
+    (HAS_CATS
+      ? "<br>The " + fmtN(RULES.length) + " category rules come from <code>" +
+        esc(META.categories || "categories") + "</code>. Put yours in <code>" +
+        esc((META.categories || "categories") + ".local") + "</code>: same format, tried first, " +
+        "and git will not fight you over it."
+      : "<br>No category rules were found, so the report has no category column.") +
+    (RULE_ERRORS.length
+      ? '<br><span class="warn">Rules that did not compile: ' + esc(RULE_ERRORS.join("; ")) + "</span>"
       : "");
 }
 

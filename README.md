@@ -103,7 +103,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-d`, `--domain REGEX` | — | — | keep only the domains that match the regex (case insensitive) |
 | `-n`, `--top N` | — | every row | keep only the first N rows |
 | `-f`, `--format FMT` | `PIHOLE_FORMAT` | `count` | `count`, `list`, `csv`, `json`, `html` or `raw` |
-| `--categories F` | `PIHOLE_PEEK_CATEGORIES` | a file named `categories` next to the script | extra category rules for the HTML report |
+| `--categories F` | `PIHOLE_PEEK_CATEGORIES` | a file named `categories` next to the script | the category rules of the HTML report; the rules in `F.local` are read first and win |
 | `--list-clients` | — | — | list the clients the Pi-hole knows, with their query count, and exit |
 | `-k`, `--insecure` | `PIHOLE_INSECURE` | off | accept a self-signed TLS certificate |
 | `--totp CODE` | — | — | two-factor code, when the Pi-hole asks for one |
@@ -222,8 +222,25 @@ statuses behind the row.
 
 ### The domain categories
 
-The category is a guess from the domain name, computed in the page itself: nothing is sent
-anywhere. It is a hint for reading the table, not a verdict.
+**The script ships no taxonomy of its own.** Every category, its colour and its wording live in the
+`categories` file next to it, and the report is built from that. Change the file, and the next
+report follows. Delete it, and the report simply drops the category column.
+
+```sh
+# <category> <regex>            classify a domain; the FIRST match wins
+# @color <category> <light> [dark]
+# @about <category> <text>      the sentence shown in the legend
+
+@color ads        #eb6834 #d95926
+@about ads        ad exchanges and ad SDKs
+ads               doubleclick|googleads|applovin|criteo|openx|(^|\.)ads?[.-]
+```
+
+A line whose first non-blank character is `#` is a comment. Anywhere else a `#` belongs to the
+value, so a regex or a colour can hold one. The regex is case insensitive and it is tested against
+the whole domain.
+
+The file that ships with the project carries 18 categories:
 
 | Category | What lands there |
 |---|---|
@@ -245,39 +262,36 @@ anywhere. It is a hint for reading the table, not a verdict.
 | `vendor` | services of the device maker: lgtvcommon, samsung, tizen, roku, apple, microsoft |
 | `cdn` | content delivery networks |
 | `cloud` | generic cloud, hosting and platform APIs |
-| `other` | everything the rules do not recognise |
+| `other` | no rule matched |
 
-The rules are an **ordered list and the first match wins**, so the order is the specification:
-`logs.ads.vungle.com` is `ads`, not `telemetry`, because `ads` comes first. Hovering a category in
-the table shows the rule that chose it, and the detail panel writes it out.
+The rules are an **ordered list and the first match wins**, so the order of the lines is the
+specification: `logs.ads.vungle.com` is `ads`, not `telemetry`, because the `ads` line comes first.
+Hovering a category in the table shows the rule that chose it, and the detail panel writes it out —
+that is how a wrong category gets found and corrected.
+
+Four categories are coloured: `ads` orange, `acr` aqua, and `tracking` and `telemetry` sharing the
+blue, because they mean the same thing — data about the device leaving the network. Three hues is
+what clears the colour-blindness and contrast checks on both surfaces, so every other category keeps
+a neutral dot and relies on its written name. A category with no `@color` is neutral, which scales
+to any number of categories.
 
 ### Your own categories
 
-Drop a `categories` file next to the script, or point `--categories` at one. One rule per line:
-
-```sh
-<category>   <regex>
-```
+Do not edit `categories`: a later `git pull` would fight you. Write your rules in
+**`categories.local`** next to it — ignored by git, read first, so your rules win:
 
 ```sh
 # extend a category that already exists
 smarthome    my-thermostat|my-doorbell\.local
-# or invent one
-printer      brother|epsonconnect|hpeprint
-nas          synology|qnap|truenas
-# force a domain the built-in rules read the wrong way
-streaming    ^cdn-0\.example-video\.com$
+# or invent one, with a colour and a description of its own
+@color printer    #4a3aa7 #9085e9
+@about printer    the printers on this network
+printer           brother|epsonconnect|hpeprint
+# force a domain the shipped rules read the wrong way
+streaming         ^cdn-0\.example-video\.com$
 ```
 
-The regex is case insensitive and tested against the whole domain. **Your rules are tried before the
-built-in ones, so they win**, and a rule that does not compile is reported in the legend instead of
-breaking the page. `config.example` has a `categories.example` next to it to start from; the
-`categories` file itself is in `.gitignore`.
-
-Four categories carry a colour: `ads` orange, `acr` aqua, and `tracking` and `telemetry` sharing
-the blue — both mean the same thing, data about the device leaving the network. Three hues is what
-clears the colour-blindness and contrast checks in both themes, so every other category keeps a
-neutral dot and relies on its written name.
+A regex that does not compile is reported in the legend instead of breaking the page.
 
 ### The Whois button
 
