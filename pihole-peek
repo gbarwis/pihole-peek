@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -405,6 +405,8 @@ body {
 header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px; }
 h1 span { color: var(--ink-3); font-weight: 400; }
+h1 .ver { font-size: 10.5px; font-weight: 500; color: var(--ink-3); letter-spacing: 0;
+          vertical-align: super; margin-left: 3px; font-variant-numeric: tabular-nums; }
 h1 em { font-style: normal; font-weight: 700; font-size: 1.08em; margin-left: 9px; letter-spacing: -.015em; }
 #theme {
   width: 36px; height: 36px; padding: 0; border-radius: 50%;
@@ -515,7 +517,7 @@ footer a { color: var(--ink-2); }
 
 <header>
   <div>
-    <h1>pihole-peek <span id="h-sub"></span></h1>
+    <h1>pihole-peek<span class="ver" id="h-ver"></span> <span id="h-sub"></span></h1>
     <p class="meta" id="h-meta"></p>
   </div>
   <div class="spacer"></div>
@@ -846,6 +848,7 @@ function fill(sel, label, values) {
 }
 
 function init() {
+  $("h-ver").textContent = "v" + META.version;
   $("h-sub").textContent = META.client ? "· " + META.client : "· all clients";
   if (META.alias) {
     const em = document.createElement("em");

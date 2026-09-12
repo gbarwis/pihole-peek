@@ -209,6 +209,8 @@ What the page gives you:
   urlscan.io, Netify and crt.sh.
 * **export what you filtered** — *Copy domains* puts the visible list in the clipboard, *Download
   CSV* saves it with the state, the readable status and the category added.
+* **the version that made it** — the header carries the `pihole-peek` version next to the name, so a
+  report that travels by mail or sits in a folder still says what produced it.
 * **a legend at the foot of the page** — every FTL status with the sentence that explains it, every
   category with what it covers, and the number of queries each one holds in this export. Values the
   export does not contain stay greyed out, so the legend doubles as a reference.
@@ -221,8 +223,9 @@ What the page gives you:
        src="docs/detail-light.png">
 </picture>
 
-`--alias` gives the client a name you recognise. The report then reads *pihole-peek · 192.0.2.70
-**living room TV***, the browser tab carries the name, and *Download CSV* uses it in the file name.
+`--alias` gives the client a name you recognise. The report then reads *pihole-peek v2.1.0 ·
+192.0.2.70 **living room TV***, the browser tab carries the name, and *Download CSV* uses it in the
+file name.
 An address tells you which device answered; the alias tells you which device it is.
 
 ### The state of a row
