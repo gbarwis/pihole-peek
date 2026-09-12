@@ -4,3 +4,6 @@ config
 # Claude Code guidance and local session data
 CLAUDE.md
 .claude/
+
+# generated reports
+*.html
