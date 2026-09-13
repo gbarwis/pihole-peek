@@ -30,8 +30,8 @@ Pi-hole v6 only. Version 5 used `admin/api.php` with an auth token, which this t
 
 ## Requirements
 
-`bash` 3.2 or later, `curl`, and `jq` 1.6 or later (it uses `$ARGS.named`). It runs on a stock
-macOS install. With GNU `date` (Linux, or Homebrew `coreutils`) the `--since` and `--until`
+`bash` 3.2 or later, `curl`, `jq` 1.6 or later (it uses `$ARGS.named`), and the POSIX `awk`,
+`mktemp` and `dd` that every Unix already ships. It runs on a stock macOS install. With GNU `date` (Linux, or Homebrew `coreutils`) the `--since` and `--until`
 options take anything `date -d` understands; with BSD `date` they take `YYYY-MM-DD`, optionally
 followed by ` HH:MM` or ` HH:MM:SS`, or `@EPOCH`.
 
@@ -76,6 +76,7 @@ PIHOLE_URL="http://pihole.example.lan"
 #PIHOLE_PASSWORD="change-me"
 #PIHOLE_STATUS="all"
 #PIHOLE_HOURS="24"
+#PIHOLE_PAGE_SIZE="10000"
 #PIHOLE_FORMAT="count"
 #PIHOLE_INSECURE="0"
 ```

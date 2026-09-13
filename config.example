@@ -20,5 +20,9 @@ PIHOLE_URL="http://pihole.example.lan"
 #PIHOLE_HOURS="24"
 #PIHOLE_FORMAT="count"
 
+# Queries per API request. The server never returns more than 10000; lower it
+# to use less memory on a small box.
+#PIHOLE_PAGE_SIZE="10000"
+
 # Set to 1 to accept a self-signed TLS certificate (same as --insecure).
 #PIHOLE_INSECURE="0"

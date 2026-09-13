@@ -183,6 +183,7 @@ done
 
 command -v curl >/dev/null || die "curl is necessary"
 command -v jq   >/dev/null || die "jq is necessary"
+command -v awk  >/dev/null || die "awk is necessary"
 
 [[ -n "$URL" ]] || { usage >&2; die "no Pi-hole address: use --url, PIHOLE_URL or the config file"; }
 [[ "$URL" == http://* || "$URL" == https://* ]] || URL="http://$URL"
