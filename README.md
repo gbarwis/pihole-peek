@@ -1,10 +1,15 @@
 # pihole-peek
 
-A small shell tool that asks the **Pi-hole v6 REST API** which domains a client resolved, and
-groups the answer by domain. It tells you what a device on your network talks to — the smart TV
-that phones home, the phone that runs an ad SDK, the IoT box that never stops — and it exports the
-result as a table, a plain domain list, CSV, JSON or a self-contained **HTML report** with live
-filters, sortable columns and a per-domain look-up.
+**Version 2.3.0** · Pi-hole v6 · MIT · [what changed](#versions)
+
+A small tool that asks the **Pi-hole v6 REST API** which domains a client resolved, and groups the
+answer by domain. It tells you what a device on your network talks to — the smart TV that phones
+home, the phone that runs an ad SDK, the IoT box that never stops — and it exports the result as a
+table, a plain domain list, CSV, JSON or a self-contained **HTML report** with live filters,
+sortable columns and a per-domain look-up.
+
+It comes twice: `pihole-peek`, a bash script, and `pihole-peek.py`, a Python script. Same options,
+same files, same bytes out. Use whichever suits the machine you are on.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
@@ -30,10 +35,15 @@ Pi-hole v6 only. Version 5 used `admin/api.php` with an auth token, which this t
 
 ## Requirements
 
-`bash` 3.2 or later, `curl`, `jq` 1.6 or later (it uses `$ARGS.named`), and the POSIX `awk`,
-`mktemp` and `dd` that every Unix already ships. It runs on a stock macOS install. With GNU `date` (Linux, or Homebrew `coreutils`) the `--since` and `--until`
-options take anything `date -d` understands; with BSD `date` they take `YYYY-MM-DD`, optionally
-followed by ` HH:MM` or ` HH:MM:SS`, or `@EPOCH`.
+A Pi-hole v6, and one of the two scripts:
+
+- **`pihole-peek`** — `bash` 3.2 or later, `curl`, `jq` 1.6 or later (it uses `$ARGS.named`), and
+  the POSIX `awk`, `mktemp` and `dd` that every Unix already ships. It runs on a stock macOS
+  install once `jq` is there.
+- **`pihole-peek.py`** — Python 3.8 or later. Standard library only: nothing to install, and no
+  `curl`, `jq`, `awk` or `date`.
+
+[Two implementations, one behaviour](#two-implementations-one-behaviour) says which to pick.
 
 **Tested on Pi-hole core v6.4.3 with FTL v6.7.** That is the only build it has been run against. The
 v6 API is stable across the 6.x line, so other builds should work, but if one does not, open an
@@ -45,11 +55,45 @@ at `/api/info/version`.
 ```sh
 git clone https://github.com/nightwatch75/pihole-peek.git
 cd pihole-peek
-ln -s "$PWD/pihole-peek" ~/.local/bin/pihole-peek     # any directory in your PATH
+ln -s "$PWD/pihole-peek" ~/.local/bin/pihole-peek        # the bash script
+ln -s "$PWD/pihole-peek.py" ~/.local/bin/pihole-peek     # or the Python one, same name
 ```
 
-The script follows its own symlink, so the `config` and `categories` files next to the real script
-are always found.
+Both follow their own symlink, so the `config` and `categories` files next to the real script are
+always found.
+
+On Windows there is no symlink to make. Install Python, then run the script where it lies:
+
+```powershell
+py pihole-peek.py -u http://pihole.example.lan -f html > report.html
+```
+
+Every example below uses the name `pihole-peek`. They all hold for `pihole-peek.py` as well: the
+options are the same.
+
+## Two implementations, one behaviour
+
+|  | `pihole-peek` | `pihole-peek.py` |
+|---|---|---|
+| Needs | `bash`, `curl`, `jq`, `awk` | Python 3.8 or later, nothing else |
+| Linux | yes | yes |
+| macOS | yes, once `jq` is installed | yes, with the Python the Command Line Tools install |
+| Windows | only inside WSL or Git Bash, and neither ships `jq` | yes |
+| CPU for a week of traffic | 1.0 s | 0.3 s |
+| Peak memory | 34 MB | 45 MB, and 22 MB of that is the interpreter |
+
+Both read the same `config` and `categories` files and write the same bytes. Every format is
+compared file by file before a release — a 343 KB HTML report of 57755 queries comes out identical
+from the two.
+
+One difference is on purpose. With `-f raw` the bash script pipes the answer through `jq`, which
+rewrites a number such as `5.79e-05` as `0.0000579`; the Python script writes the bytes the API
+sent, untouched.
+
+So: the Python script is the easier install, it is the only one that runs on Windows as it is, and
+it uses about a third of the CPU. The bash script has the smaller memory floor, which is what
+counts on a very small box. Neither is faster in practice on a whole run — the Pi-hole itself takes
+about eleven seconds to hand over a week of queries, and that is most of the wait either way.
 
 ## Configuration
 
@@ -84,6 +128,10 @@ PIHOLE_URL="http://pihole.example.lan"
 `config` is in `.gitignore`: your address and your password stay on your machine.
 If the config file sets a default client, `--all-clients` puts the report back on every client.
 
+Keep the file to plain `NAME="value"` lines. The bash script sources it, so anything else in it
+runs as a shell command; the Python script only reads assignments and ignores the rest. A line such
+as `PIHOLE_PASSWORD="$(pass show pihole)"` therefore works in one and not in the other.
+
 ## Usage
 
 ```sh
@@ -116,7 +164,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-A`, `--alias NAME` | `PIHOLE_ALIAS` | — | friendly name of the client, written next to its address in the HTML report. It needs a client, so `--all-clients` clears it. |
 | `-s`, `--status SET` | `PIHOLE_STATUS` | `all` | which queries to export — see the table below |
 | `-t`, `--hours N` | `PIHOLE_HOURS` | `24` | time window, hours back from now |
-| `--since TS` | — | — | absolute start, in any format GNU `date -d` reads |
+| `--since TS` | — | — | absolute start. `YYYY-MM-DD`, optionally with ` HH:MM` or ` HH:MM:SS`, or `@EPOCH`. The bash script also takes anything GNU `date -d` reads, where GNU `date` is the one installed. |
 | `--until TS` | — | now | absolute end |
 | `-d`, `--domain REGEX` | — | — | keep only the domains that match the regex (case insensitive) |
 | `-n`, `--top N` | — | every row | keep only the first N rows |
@@ -363,14 +411,20 @@ say so: `recordsFiltered` keeps reporting the real total. `pihole-peek` therefor
 page by page with the `start` parameter and reduces each page as it arrives, so the result covers
 every query in the range.
 
-Memory does not grow with the window. Each page goes straight to a temporary file, never into a
-shell variable, and the running aggregate holds one entry per domain — a few thousand — instead of
-one per query. A day of traffic and a week of traffic cost the same. Measured on a window of
-300000 queries, the whole run stays inside **64 MB**; keeping the same data in memory as one JSON
-document needs more than 512 MB.
+Memory does not grow with the window. The bash script writes each page to a temporary file and
+never into a shell variable; the Python script throws away every field it does not need while the
+page is still being parsed. Both then hold one entry per domain — a few thousand — instead of one
+per query, so a day of traffic and a week of traffic cost the same.
+
+Measured on a week of real traffic, 57755 queries in six requests: the bash script peaks at
+**34 MB** and the Python one at **45 MB**, of which 22 MB is the interpreter itself. Under
+`ulimit -v` they still finish inside 48 MB and 64 MB. On a window of 300000 queries the bash script
+stays inside 64 MB; keeping the same data in memory as one JSON document, which is what version
+2.1.0 did, needs more than 512 MB.
 
 If a run still feels heavy on a very small machine, `--page-size 2000` makes each request smaller.
-The count of pages goes up, the peak goes down.
+The count of pages goes up, the peak goes down — to 12 MB for the bash script and 30 MB for the
+Python one.
 
 When the pages do not add up to `recordsFiltered` — new queries can land while a long run is in
 flight — the script says so on stderr rather than reporting a short total in silence.
@@ -399,6 +453,14 @@ is the `earliest_timestamp_disk` field of a `--format raw` answer.
 | `2` | no query matches the filters |
 
 So a cron job can tell "nothing matched" from "the Pi-hole is down".
+
+## Versions
+
+| Version | What changed |
+|---|---|
+| **2.3.0** | `pihole-peek.py`: a Python port that needs no `jq` and runs on Windows as it is. Four fixes in the bash script — rows tied on hits and domain now come out in the same order on every `awk`; `-f count` no longer starts `date` once per row, which made that format three times faster; the environment now wins over the config file for every documented variable, as the help text always promised; `@color` and `@about` in `categories.local` now win over the shipped file, as its rules already did. |
+| 2.2.0 | Reads the whole window. Earlier versions stopped at the 10000 queries the API returns per request, and reported the short total in silence. |
+| 2.1.0 | Runs on a stock macOS: no `bash` 4, no GNU `date`. |
 
 ## License
 

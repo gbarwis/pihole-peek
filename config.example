@@ -1,5 +1,7 @@
 # pihole-peek configuration — copy to "config" next to the script and edit.
-# Shell syntax: KEY="value". The environment and the command line win over it.
+# Plain KEY="value" lines. The environment and the command line win over them.
+# pihole-peek sources this file, pihole-peek.py only reads the assignments, so
+# keep it to assignments: a $(command) in here runs in one and not in the other.
 # Keep this file private if it holds a password:  chmod 600 config
 
 # Base URL of the Pi-hole. The API is at URL/api.
