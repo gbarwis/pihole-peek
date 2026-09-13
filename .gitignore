@@ -10,3 +10,6 @@ CLAUDE.md
 
 # generated reports
 *.html
+
+# local Windows port, not ready to ship
+pihole-peek.ps1

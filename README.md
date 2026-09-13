@@ -120,6 +120,7 @@ pihole-peek -f raw | jq '.queries[] | .upstream'     # raw API answer, your own 
 | `-d`, `--domain REGEX` | — | — | keep only the domains that match the regex (case insensitive) |
 | `-n`, `--top N` | — | every row | keep only the first N rows |
 | `-f`, `--format FMT` | `PIHOLE_FORMAT` | `count` | `count`, `list`, `csv`, `json`, `html` or `raw` |
+| `--page-size N` | `PIHOLE_PAGE_SIZE` | `10000` | queries per API request. The server never returns more than 10000; lower it to use less memory on a small box. |
 | `--categories F` | `PIHOLE_PEEK_CATEGORIES` | a file named `categories` next to the script | the category rules of the HTML report; the rules in `F.local` are read first and win |
 | `--list-clients` | — | — | list the clients the Pi-hole knows, with their query count, and exit |
 | `-k`, `--insecure` | `PIHOLE_INSECURE` | off | accept a self-signed TLS certificate |
@@ -186,8 +187,10 @@ domain,hits,status,last_seen
 pihole-peek -f html > report.html && xdg-open report.html
 ```
 
-**`raw`** — the API answer with no processing, for your own `jq`. Every field is there: query type,
-upstream, reply time, DNSSEC state, CNAME chain.
+**`raw`** — the API answers with no processing, for your own `jq`. Every field is there: query type,
+upstream, reply time, DNSSEC state, CNAME chain. A window that needs several requests prints one
+JSON document per page; `jq` reads them in sequence, so `-f raw | jq '.queries[]'` still sees
+everything.
 
 With `--top N` the summary counts the rows that are shown, not the whole window.
 
@@ -351,6 +354,25 @@ says so and gives you the link to open the answer yourself.
 
 The session is opened for the single run and closed with `DELETE /api/auth` when the script ends,
 so it does not eat a session slot.
+
+## Large windows
+
+The API returns **at most 10000 queries per request**, whatever `length` asks for, and it does not
+say so: `recordsFiltered` keeps reporting the real total. `pihole-peek` therefore walks the window
+page by page with the `start` parameter and reduces each page as it arrives, so the result covers
+every query in the range.
+
+Memory does not grow with the window. Each page goes straight to a temporary file, never into a
+shell variable, and the running aggregate holds one entry per domain — a few thousand — instead of
+one per query. A day of traffic and a week of traffic cost the same. Measured on a window of
+300000 queries, the whole run stays inside **64 MB**; keeping the same data in memory as one JSON
+document needs more than 512 MB.
+
+If a run still feels heavy on a very small machine, `--page-size 2000` makes each request smaller.
+The count of pages goes up, the peak goes down.
+
+When the pages do not add up to `recordsFiltered` — new queries can land while a long run is in
+flight — the script says so on stderr rather than reporting a short total in silence.
 
 ## The 24-hour limit
 

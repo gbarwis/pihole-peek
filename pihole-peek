@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -91,6 +91,8 @@ Options:
       --until TS       absolute end (default: now)
   -d, --domain REGEX   keep only the domains that match REGEX
   -n, --top N          keep only the first N rows
+      --page-size N    queries per API request (default: 10000, the server cap;
+                       lower it on a small box to use less memory)
   -f, --format FMT     count (default) | list | csv | json | html | raw
       --categories F   category rules for the html report (default: a file named
                        'categories' next to this script; the rules in F.local,
@@ -110,6 +112,7 @@ Environment:
   PIHOLE_PEEK_CONFIG   path of the config file (default: a file named
                        'config' next to this script)
   PIHOLE_PEEK_CATEGORIES  same as --categories
+  PIHOLE_PAGE_SIZE     same as --page-size
 
 Precedence: command line > environment > config file.
 
@@ -150,6 +153,7 @@ DOMAIN_RE=""
 TOP=0
 LIST_CLIENTS=0
 TOTP=""
+PAGE_SIZE="${PIHOLE_PAGE_SIZE:-10000}"
 CATEGORIES="${PIHOLE_PEEK_CATEGORIES:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -164,6 +168,7 @@ while [[ $# -gt 0 ]]; do
         --until)       UNTIL="${2:?--until needs a value}"; shift 2 ;;
         -d|--domain)   DOMAIN_RE="${2:?--domain needs a value}"; shift 2 ;;
         -n|--top)      TOP="${2:?--top needs a value}"; shift 2 ;;
+        --page-size)   PAGE_SIZE="${2:?--page-size needs a value}"; shift 2 ;;
         -f|--format)   FORMAT="${2:?--format needs a value}"; shift 2 ;;
         --categories)  CATEGORIES="${2:?--categories needs a value}"; shift 2 ;;
         --list-clients) LIST_CLIENTS=1; shift ;;
@@ -187,6 +192,7 @@ API="$URL/api"
 
 [[ "$HOURS" =~ ^[0-9]+$ ]] || die "--hours needs a whole number: $HOURS"
 [[ "$TOP"   =~ ^[0-9]+$ ]] || die "--top needs a whole number: $TOP"
+[[ "$PAGE_SIZE" =~ ^[0-9]+$ && "$PAGE_SIZE" -gt 0 ]] || die "--page-size needs a whole number above zero: $PAGE_SIZE"
 case "$FORMAT" in count|list|csv|json|html|raw) ;; *) die "unknown format: $FORMAT" ;; esac
 [[ -n "$ALIAS" && -z "$CLIENT" ]] && die "--alias names one client, so it needs --client too"
 
@@ -211,8 +217,30 @@ api_get() {
     printf '%s' "$resp"
 }
 
-logout() { [[ -n "$SID" ]] && "${CURL[@]}" -X DELETE -H "sid: $SID" "$API/auth" >/dev/null 2>&1 || true; }
-trap logout EXIT
+TMPDIR_PEEK=""
+cleanup() {
+    [[ -n "$SID" ]] && "${CURL[@]}" -X DELETE -H "sid: $SID" "$API/auth" >/dev/null 2>&1
+    [[ -n "$TMPDIR_PEEK" && -d "$TMPDIR_PEEK" ]] && rm -rf "$TMPDIR_PEEK"
+    return 0
+}
+trap cleanup EXIT
+
+# api_get_file URL FILE — the answer goes straight to disk, never into a variable.
+# A page of 10000 queries is megabytes; holding it in the shell and then feeding
+# it to jq through a here-string costs several copies of it.
+api_get_file() {
+    local url="$1" out="$2" head
+    if [[ -n "$SID" ]]; then
+        "${CURL[@]}" -H "sid: $SID" -o "$out" "$url" || die "cannot reach $API"
+    else
+        "${CURL[@]}" -o "$out" "$url" || die "cannot reach $API"
+    fi
+    # an error answer is small and starts with {"error" — look, do not parse the page
+    head="$(dd if="$out" bs=1 count=32 2>/dev/null | tr -d ' \n')"
+    if [[ "$head" == '{"error"'* ]]; then
+        die "API: $(api_error "$(cat "$out")")"
+    fi
+}
 
 authenticate() {
     local resp body
@@ -288,36 +316,99 @@ fi
 
 # --------------------------------------------------------------------------
 # query
+#
+# The API answers with at most 10000 queries per request, whatever `length`
+# asks for, and says nothing about it: recordsFiltered still reports the real
+# total. So walk the window page by page with `start`, and reduce every page to
+# four TSV fields as it arrives. The aggregate that comes out is bounded by the
+# number of distinct domains, not by the number of queries, so a week of
+# traffic costs the same memory as an hour.
 # --------------------------------------------------------------------------
-QUERY="$API/queries?from=$FROM&until=$TO&length=1000000"
+TMPDIR_PEEK="$(mktemp -d "${TMPDIR:-/tmp}/pihole-peek.XXXXXX")" || die "cannot make a temporary directory"
+PAGE_FILE="$TMPDIR_PEEK/page.json"
+ROWS_FILE="$TMPDIR_PEEK/rows.tsv"
+: > "$ROWS_FILE"
+
+QUERY="$API/queries?from=$FROM&until=$TO"
 [[ -n "$CLIENT" ]] && QUERY="$QUERY&client_ip=$(jq -rn --arg c "$CLIENT" '$c|@uri')"
 # the API takes one status only, so a group of statuses is filtered here below
 [[ "$STATUS_COUNT" -eq 1 ]] && QUERY="$QUERY&status=${WANTED// /}"
 
-RAW="$(api_get "$QUERY")"
-
-if [[ "$FORMAT" == "raw" ]]; then
-    jq . <<<"$RAW"
-    exit 0
-fi
-
 BYCLIENT=true
 [[ -n "$CLIENT" && "$FORMAT" != "html" ]] && BYCLIENT=false
 
-GROUPED="$(jq -c --argjson want "$STATUS_JSON" \
-              --argjson byclient "$BYCLIENT" \
-              --arg re "$DOMAIN_RE" '
-    [ .queries[]
-      | select(($want | length) == 0 or (.status as $s | $want | index($s)))
-      | select($re == "" or (.domain | test($re; "i"))) ]
-    | [ (if $byclient then group_by([.domain, .client.ip]) else group_by(.domain) end)[]
-        | { domain: .[0].domain,
-            client: (if $byclient then .[0].client.ip else null end),
-            hits:   length,
-            status: (map(.status) | unique | join("|")),
-            first:  (map(.time) | min),
-            last:   (map(.time) | max) } ]
-    | sort_by(-.hits, .domain)' <<<"$RAW")"
+start=0
+total=""
+got=0
+pages=0
+while :; do
+    api_get_file "$QUERY&length=$PAGE_SIZE&start=$start" "$PAGE_FILE"
+    if [[ -z "$total" ]]; then
+        total="$(jq -r '.recordsFiltered // 0' "$PAGE_FILE")"
+        [[ "$total" =~ ^[0-9]+$ ]] || die "the API answered without recordsFiltered — is $API really a Pi-hole v6?"
+    fi
+
+    if [[ "$FORMAT" == "raw" ]]; then
+        jq . "$PAGE_FILE"            # one JSON document per page; jq reads them in sequence
+        n="$(jq '.queries | length' "$PAGE_FILE")"
+    else
+        jq -r --argjson want "$STATUS_JSON" --arg re "$DOMAIN_RE" '
+            .queries[]
+            | select(($want | length) == 0 or (.status as $s | $want | index($s)))
+            | select($re == "" or (.domain | test($re; "i")))
+            | [ .domain, (.client.ip // ""), .status, (.time | tostring) ] | @tsv' \
+            "$PAGE_FILE" >> "$ROWS_FILE"
+        n="$(jq '.queries | length' "$PAGE_FILE")"
+    fi
+
+    got=$(( got + n ))
+    pages=$(( pages + 1 ))
+    [[ -t 2 && "$total" -gt "$PAGE_SIZE" ]] &&
+        printf '\r%s: reading %s of %s queries...' "$PROG" "$got" "$total" >&2
+
+    [[ "$n" -lt "$PAGE_SIZE" ]] && break
+    [[ "$got" -ge "$total" ]] && break
+    start=$(( start + PAGE_SIZE ))
+done
+[[ -t 2 && "$total" -gt "$PAGE_SIZE" ]] && printf '\r\033[K' >&2
+
+if [[ "$got" -ne "$total" ]]; then
+    printf '%s: read %s queries but the API counted %s — the window may have moved\n' \
+           "$PROG" "$got" "$total" >&2
+fi
+
+[[ "$FORMAT" == "raw" ]] && exit 0
+
+# Aggregate in awk: one entry per domain (and client), never one per query.
+# POSIX awk only — the script runs on stock macOS.
+GROUPED="$(awk -F'\t' -v byclient="$BYCLIENT" '
+    {
+        key = (byclient == "true") ? $1 FS $2 : $1
+        hits[key]++
+        t = $4 + 0
+        # compare as numbers, keep the original text: reformatting the epoch
+        # through awk would round away the last digit the API sent
+        if (!(key in first) || t < first[key]) { first[key] = t; firstx[key] = $4 }
+        if (!(key in last)  || t > last[key])  { last[key]  = t; lastx[key]  = $4 }
+        if (index("|" st[key] "|", "|" $3 "|") == 0)
+            st[key] = (st[key] == "" ? $3 : st[key] "|" $3)
+        dom[key] = $1
+        cli[key] = $2
+    }
+    END {
+        for (key in hits)
+            printf "%s\t%s\t%d\t%s\t%s\t%s\n", dom[key], cli[key], hits[key], st[key], firstx[key], lastx[key]
+    }' "$ROWS_FILE" \
+| jq -R -s -c --argjson byclient "$BYCLIENT" '
+    split("\n")
+    | map(select(length > 0) | split("\t"))
+    | map({ domain: .[0],
+            client: (if $byclient then .[1] else null end),
+            hits:   (.[2] | tonumber),
+            status: (.[3] | split("|") | unique | join("|")),
+            first:  (.[4] | tonumber),
+            last:   (.[5] | tonumber) })
+    | sort_by(-.hits, .domain)')"
 
 [[ "$TOP" -gt 0 ]] && GROUPED="$(jq -c --argjson n "$TOP" '.[:$n]' <<<"$GROUPED")"
 
