@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 PROG="${0##*/}"
 SELF="$(readlink -f "$0")"
 SELF_DIR="${SELF%/*}"
@@ -123,10 +123,16 @@ EOF
 # --------------------------------------------------------------------------
 # configuration: config file, then environment, then flags
 # --------------------------------------------------------------------------
-env_url="${PIHOLE_URL:-}"
-env_client="${PIHOLE_CLIENT:-}"
-env_alias="${PIHOLE_ALIAS:-}"
-env_password="${PIHOLE_PASSWORD:-}"
+# The config file is sourced, so it would overwrite the environment. Keep a
+# copy of every variable the environment set, and put it back afterwards:
+# without this the file silently wins, which is the opposite of what the help
+# text promises. bash 3.2 has no name references, hence the eval.
+PEEK_VARS="PIHOLE_URL PIHOLE_CLIENT PIHOLE_ALIAS PIHOLE_PASSWORD PIHOLE_STATUS
+           PIHOLE_HOURS PIHOLE_FORMAT PIHOLE_INSECURE PIHOLE_PAGE_SIZE
+           PIHOLE_PEEK_CATEGORIES"
+for v in $PEEK_VARS; do
+    eval "peek_env_$v=\"\${$v:-}\""
+done
 
 CONFIG="${PIHOLE_PEEK_CONFIG:-$SELF_DIR/config}"
 if [[ -f "$CONFIG" ]]; then
@@ -134,10 +140,9 @@ if [[ -f "$CONFIG" ]]; then
     . "$CONFIG"
 fi
 
-[[ -n "$env_url" ]]      && PIHOLE_URL="$env_url"
-[[ -n "$env_client" ]]   && PIHOLE_CLIENT="$env_client"
-[[ -n "$env_alias" ]]    && PIHOLE_ALIAS="$env_alias"
-[[ -n "$env_password" ]] && PIHOLE_PASSWORD="$env_password"
+for v in $PEEK_VARS; do
+    eval "if [[ -n \"\${peek_env_$v}\" ]]; then $v=\"\${peek_env_$v}\"; fi"
+done
 
 URL="${PIHOLE_URL:-}"
 CLIENT="${PIHOLE_CLIENT:-}"
@@ -409,7 +414,7 @@ GROUPED="$(awk -F'\t' -v byclient="$BYCLIENT" '
             status: (.[3] | split("|") | unique | join("|")),
             first:  (.[4] | tonumber),
             last:   (.[5] | tonumber) })
-    | sort_by(-.hits, .domain)')"
+    | sort_by(-.hits, .domain, .client)')"
 
 [[ "$TOP" -gt 0 ]] && GROUPED="$(jq -c --argjson n "$TOP" '.[:$n]' <<<"$GROUPED")"
 
@@ -440,13 +445,18 @@ rules_payload() {
     cat "${files[@]}" \
     | sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' \
     | jq -Rsc '
+        # keep the first entry for a key, in the order the keys appeared:
+        # from_entries would keep the last, which is the base file, and the
+        # local file is read first exactly so that it wins
+        def first_wins: reduce .[] as $e ({};
+            if has($e.key) then . else . + { ($e.key): $e.value } end);
         [ split("\n")[] | select(length > 0) | sub("^[[:space:]]+"; "") ] as $l
         | { colours: ( [ $l[]
                          | capture("^@color[[:space:]]+(?<c>[^[:space:]]+)[[:space:]]+(?<a>#[0-9A-Fa-f]{3,8})([[:space:]]+(?<b>#[0-9A-Fa-f]{3,8}))?$")
-                         | { key: .c, value: [ .a, (.b // .a) ] } ] | from_entries ),
+                         | { key: .c, value: [ .a, (.b // .a) ] } ] | first_wins ),
             about:   ( [ $l[]
                          | capture("^@about[[:space:]]+(?<c>[^[:space:]]+)[[:space:]]+(?<t>.+)$")
-                         | { key: .c, value: .t } ] | from_entries ),
+                         | { key: .c, value: .t } ] | first_wins ),
             rules:   [ $l[]
                        | select(startswith("@") | not)
                        | capture("^(?<c>[^[:space:]]+)[[:space:]]+(?<r>.+)$")
@@ -1197,9 +1207,11 @@ case "$FORMAT" in
     else
         printf '%-52s %7s  %s\n' "DOMAIN" "HITS" "LAST SEEN"
     fi
-    jq -r '.[] | [.domain, (.client // "-"), .hits, .last] | @tsv' <<<"$GROUPED" \
-    | while IFS=$'\t' read -r d c n t; do
-          seen="$(fmt_epoch "${t%.*}" '+%Y-%m-%d %H:%M')"
+    # jq formats the timestamp: calling `date` once per row forked a process
+    # per domain, which cost more than reading the whole window did
+    jq -r '.[] | [.domain, (.client // "-"), .hits,
+                  (.last | floor | strflocaltime("%Y-%m-%d %H:%M"))] | @tsv' <<<"$GROUPED" \
+    | while IFS=$'\t' read -r d c n seen; do
           if [[ "$BYCLIENT" == "true" ]]; then
               printf '%-52s %-16s %7s  %s\n' "$d" "$c" "$n" "$seen"
           else
