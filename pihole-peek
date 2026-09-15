@@ -197,6 +197,11 @@ command -v curl >/dev/null || die "curl is necessary"
 command -v jq   >/dev/null || die "jq is necessary"
 command -v awk  >/dev/null || die "awk is necessary"
 
+# --argjson below hands this straight to jq, which needs valid JSON (0 or 1)
+# and not just any truthy string — normalise it here instead of failing deep
+# inside the aggregation pipeline on a config file typo like "yes"
+[[ "$CLIENT_NAMES" == "1" ]] || CLIENT_NAMES=0
+
 [[ -n "$URL" ]] || { usage >&2; die "no Pi-hole address: use --url, PIHOLE_URL or the config file"; }
 [[ "$URL" == http://* || "$URL" == https://* ]] || URL="http://$URL"
 URL="${URL%/}"
@@ -407,7 +412,10 @@ GROUPED="$(awk -F'\t' -v byclient="$BYCLIENT" '
             st[key] = (st[key] == "" ? $3 : st[key] "|" $3)
         dom[key] = $1
         cli[key] = $2
-        nam[key] = $5
+        # queries arrive newest first: the first non-empty name seen for
+        # this key is the most recently known one, and is the name
+        # pihole-peek.py also keeps
+        if (nam[key] == "") nam[key] = $5
     }
     END {
         for (key in hits)

@@ -560,6 +560,11 @@ def collect(api, query, want, domain_re, byclient, page_size, raw_out):
                 else:
                     e[2] += 1
                     e[3].add(st)
+                    # queries arrive newest first: the first non-empty name
+                    # seen for this key is the most recently known one, and
+                    # is the name pihole-peek (bash) also keeps
+                    if not e[8] and name:
+                        e[8] = name
                     if tf < e[4]:
                         e[4], e[5] = tf, t
                     elif tf > e[6]:
